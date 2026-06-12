@@ -18,36 +18,37 @@ async function startBot() {
 
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: false,
+        printQRInTerminal: true,
         browser: ['ConsultorBot', 'Chrome', '1.0'],
-        logger: pino({ level: 'silent' }),
-        qrTimeout: 120,
+        logger: pino({ level: 'error' }),
+        qrTimeout: 60,
+        syncFullHistory: false,
+        markOnlineOnConnect: false,
     });
 
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect, qr } = update;
+        console.log('Connection update:', JSON.stringify({ connection: update.connection, hasQR: !!update.qr, hasError: !!update.lastDisconnect }));
 
-        if (qr) {
-            qrData = qr;
+        if (update.qr) {
+            qrData = update.qr;
             qrDataTime = Date.now();
             console.log('=== NUEVO QR GENERADO ===');
-            qrcodeTerminal.generate(qr, { small: true });
-            console.log('Escanea el QR desde el móvil secundario');
-            console.log('También en /qr');
+            qrcodeTerminal.generate(update.qr, { small: true });
         }
 
-        if (connection === 'open') {
+        if (update.connection === 'open') {
             clientReady = true;
             console.log('WhatsApp conectado correctamente');
         }
 
-        if (connection === 'close') {
+        if (update.connection === 'close') {
             clientReady = false;
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('WhatsApp desconectado. Reconectar:', shouldReconnect);
-            if (shouldReconnect) setTimeout(startBot, 3000);
+            const err = update.lastDisconnect?.error;
+            const isLoggedOut = err?.output?.statusCode === 401 || err?.data?.status === 401;
+            console.log('WhatsApp desconectado. Error:', err?.message || 'desconocido', 'LoggedOut:', isLoggedOut);
+            if (!isLoggedOut) setTimeout(startBot, 5000);
         }
     });
 
