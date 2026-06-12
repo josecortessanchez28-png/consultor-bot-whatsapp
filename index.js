@@ -72,10 +72,8 @@ function setupClient(client) {
         everConnected = true;
         displayQr = null;
         console.log('WhatsApp conectado correctamente');
-        // Backup con delay para que ready no bloquee
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        setTimeout(() => store.saveSession(SESSION_KEY, sessionDir), 3000);
-        // Backup periódico cada 5 min
+        store.saveSession(SESSION_KEY, sessionDir);
         setInterval(() => store.saveSession(SESSION_KEY, sessionDir), 300000);
     });
 
@@ -147,6 +145,16 @@ p{color:#888;font-size:13px;margin:8px 0}
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+
+// Guardar sesión antes de que Render mate el proceso
+process.on('SIGTERM', async () => {
+    console.log('SIGTERM — guardando sesión...');
+    if (everConnected) {
+        const dir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        await store.saveSession(SESSION_KEY, dir);
+    }
+    process.exit(0);
+});
 
 app.listen(PORT, () => {
     console.log('Servidor en puerto', PORT);
