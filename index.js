@@ -34,8 +34,7 @@ const app = express();
 const PORT = process.env.PORT || 8080;
 const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 
-let frozenQr = null;
-let frozenQrTime = 0;
+let latestQr = null;
 let clientReady = false;
 let everConnected = false;
 let currentClient = null;
@@ -58,26 +57,22 @@ function makeClient() {
 
 function setupClient(client) {
     client.on('qr', (qr) => {
-        const now = Date.now();
-        if (frozenQr && (now - frozenQrTime < 180000)) return;
-        frozenQr = qr;
-        frozenQrTime = now;
+        latestQr = qr;
         if (everConnected) return;
-        console.log('=== QR (válido 3 min) ===');
+        console.log('=== QR ===');
         qrcodeTerminal.generate(qr, { small: true });
     });
 
     client.on('ready', () => {
         clientReady = true;
         everConnected = true;
+        latestQr = null;
         console.log('WhatsApp conectado correctamente');
     });
 
-    client.on('disconnected', async () => {
+    client.on('disconnected', (reason) => {
         clientReady = false;
-        console.log('Desconectado. Creando nuevo cliente en 10s...');
-        await new Promise(r => setTimeout(r, 10000));
-        startClient();
+        console.log('Desconectado:', reason, '— esperando reconexión automática...');
     });
 
     client.on('message', (msg) => {
@@ -100,25 +95,27 @@ function startClient() {
     setupClient(currentClient);
 }
 
-// Self-keepalive to prevent Render free tier spin-down
 function startKeepAlive() {
-    const publicUrl = process.env.RENDER_EXTERNAL_URL || `https://consultor-bot-whatsapp.onrender.com`;
-    console.log('KeepAlive a', publicUrl, 'cada 5 min');
-    setInterval(() => {
-        https.get(`${publicUrl}/healthz`, () => {}).on('error', () => {});
-    }, 300000);
+    const url = process.env.RENDER_EXTERNAL_URL || 'https://consultor-bot-whatsapp.onrender.com';
+    console.log('KeepAlive cada 5 min a', url);
+    const ping = () => https.get(url + '/healthz', () => {}).on('error', () => {});
+    ping();
+    setInterval(ping, 300000);
 }
 
 app.get('/', (req, res) => {
-    res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!frozenQr });
+    res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!latestQr });
 });
 
 app.get('/qr', async (req, res) => {
-    if (!frozenQr) return res.send('<h3>Generando QR. Recarga en 10s.</h3>');
-    const img = await qrcode.toDataURL(frozenQr);
+    if (!latestQr) {
+        if (clientReady) return res.send('<h3>Conectado. No se necesita QR.</h3>');
+        return res.send('<h3>Generando QR. Recarga en 10s.</h3>');
+    }
+    const img = await qrcode.toDataURL(latestQr);
     res.type('html');
     res.send(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="30">
+<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="15">
 <title>QR Consultor Bot</title>
 <style>
 body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;font-family:sans-serif}
@@ -127,12 +124,13 @@ img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background
 p{color:#888;font-size:13px;margin:8px 0}
 .green{color:#4caf50;font-size:16px}
 .red{color:#f44336;font-size:16px}
+.small{color:#555;font-size:12px}
 </style></head>
 <body><div class="wrap">
-<p class="${clientReady ? 'green' : 'red'}">${clientReady ? '\u2713 Conectado' : 'Escanea para conectar'}</p>
+<p class="red">Escanea para conectar</p>
 <img src="${img}" alt="QR"/>
 <p>Abre WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo</p>
-<p style="font-size:12px;color:#555">QR válido 3 min</p>
+<p class="small">La página se actualiza cada 15s para mostrar el QR vigente</p>
 </div></body></html>`);
 });
 
