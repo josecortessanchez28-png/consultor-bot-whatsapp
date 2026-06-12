@@ -67,13 +67,15 @@ function setupClient(client) {
         qrcodeTerminal.generate(qr, { small: true });
     });
 
-    client.on('ready', () => {
+    client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
         displayQr = null;
         console.log('WhatsApp conectado correctamente');
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        store.saveSession(SESSION_KEY, sessionDir);
+        console.log('[index] Iniciando backup...');
+        await store.saveSession(SESSION_KEY, sessionDir);
+        console.log('[index] Backup completado');
         setInterval(() => store.saveSession(SESSION_KEY, sessionDir), 300000);
     });
 
