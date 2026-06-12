@@ -17,9 +17,9 @@ async function handleMessage(client, msg) {
         const waId = msg.from;
         let text = '';
 
-        if (msg.type === 'chat' && msg.body) {
+        if (msg.body && !msg.hasMedia) {
             text = msg.body.trim();
-        } else if (msg.type === 'ptt' || msg.type === 'audio') {
+        } else if (msg.hasMedia && (msg.type === 'ptt' || msg.type === 'audio')) {
             const media = await msg.downloadMedia();
             if (!media || !media.data) {
                 await client.sendMessage(waId, 'No pude descargar el audio.');

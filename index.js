@@ -72,12 +72,17 @@ client.on('disconnected', (reason) => {
     console.log('WhatsApp desconectado:', reason);
 });
 
-client.on('message', async (msg) => {
+function handleIncoming(msg) {
     if (msg.from === 'status@broadcast') return;
     if (msg.from.endsWith('@g.us')) return;
     if (msg.author && msg.author !== msg.from) return;
-    await bot.handleMessage(client, msg);
-});
+    if (msg.fromMe) return;
+    console.log('Mensaje recibido de', msg.from, 'tipo:', msg.type, 'texto:', (msg.body || '').slice(0, 60));
+    bot.handleMessage(client, msg);
+}
+
+client.on('message', handleIncoming);
+client.on('message_create', handleIncoming);
 
 app.get('/', (req, res) => {
     res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!qrData });
