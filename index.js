@@ -129,21 +129,34 @@ app.get('/qr', async (req, res) => {
     const img = await qrcode.toDataURL(displayQr);
     res.type('html');
     res.send(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><meta http-equiv="refresh" content="15">
-<title>QR Consultor Bot</title>
+<html><head><meta charset="utf-8"><title>QR Consultor Bot</title>
 <style>
 body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;font-family:sans-serif}
 .wrap{text-align:center}
 img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}
 p{color:#888;font-size:13px;margin:8px 0}
-.green{color:#4caf50;font-size:16px}
-.red{color:#f44336;font-size:16px}
 </style></head>
 <body><div class="wrap">
 <p class="red">Escanea para conectar</p>
-<img src="${img}" alt="QR"/>
+<img id="qri" src="${img}" alt="QR"/>
 <p>Abre WhatsApp → Ajustes → Dispositivos vinculados</p>
+<script>
+setInterval(async ()=>{
+  try {
+    let r=await fetch('/qr-data');
+    if(!r.ok) return;
+    let d=await r.json();
+    if(d.qr) document.getElementById('qri').src=d.qr;
+  }catch(e){}
+},5000);
+</script>
 </div></body></html>`);
+});
+
+app.get('/qr-data', async (req, res) => {
+    if (!displayQr) return res.json({ qr: null });
+    const img = await qrcode.toDataURL(displayQr);
+    res.json({ qr: img });
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
