@@ -5,15 +5,26 @@ const { createClient } = require('@supabase/supabase-js');
 const archiver = require('archiver');
 const unzipper = require('unzipper');
 
+const SESSION_WA = '__session__';
+
 class SupabaseStore {
     constructor() {
         this.db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
     }
 
+    async _hasSessionRow() {
+        const { data, error } = await this.db
+            .from('conversaciones')
+            .select('id')
+            .eq('whatsapp_id', SESSION_WA)
+            .limit(1);
+        return !error && (data?.length || 0) > 0;
+    }
+
     async saveSession(key, sourceDir) {
         const exists = await fs.pathExists(sourceDir);
         if (!exists) {
-            console.log('[SupabaseStore] sourceDir no existe');
+            console.log('[Store] sourceDir no existe');
             return;
         }
 
@@ -32,18 +43,25 @@ class SupabaseStore {
             const buffer = await fs.readFile(tmpPath);
             const b64 = buffer.toString('base64');
 
+            // Remove old session row
+            await this.db
+                .from('conversaciones')
+                .delete()
+                .eq('whatsapp_id', SESSION_WA);
+
+            // Insert new
             const { error } = await this.db
-                .from('sessions')
-                .upsert({ key, data: b64, updated_at: new Date().toISOString() }, { onConflict: 'key' });
+                .from('conversaciones')
+                .insert({ whatsapp_id: SESSION_WA, rol: key, mensaje: b64 });
 
             if (error) {
-                console.log('[SupabaseStore] DB upsert error:', error.message);
+                console.log('[Store] insert error:', error.message);
                 return;
             }
 
-            console.log(`[SupabaseStore] Sesión guardada en BD (${(buffer.length / 1024).toFixed(0)} KB)`);
+            console.log(`[Store] Sesión guardada en conversaciones (${(buffer.length / 1024).toFixed(0)} KB)`);
         } catch (e) {
-            console.log('[SupabaseStore] saveSession error:', e.message);
+            console.log('[Store] saveSession error:', e.message);
         } finally {
             await fs.remove(tmpPath).catch(() => {});
         }
@@ -52,17 +70,20 @@ class SupabaseStore {
     async restoreSession(key, destDir) {
         try {
             const { data, error } = await this.db
-                .from('sessions')
-                .select('data')
-                .eq('key', key)
-                .single();
+                .from('conversaciones')
+                .select('mensaje')
+                .eq('whatsapp_id', SESSION_WA)
+                .eq('rol', key)
+                .order('created_at', { ascending: false })
+                .limit(1);
 
-            if (error || !data) {
-                console.log('[SupabaseStore] DB select error:', error?.message || 'no data');
+            if (error || !data?.length) {
+                console.log('[Store] No hay sesión guardada');
                 return false;
             }
 
-            const buffer = Buffer.from(data.data, 'base64');
+            const b64 = data[0].mensaje;
+            const buffer = Buffer.from(b64, 'base64');
             const tmpPath = path.join(os.tmpdir(), `sess-${key}`);
 
             try {
@@ -74,13 +95,13 @@ class SupabaseStore {
                         .on('close', resolve)
                         .on('error', reject);
                 });
-                console.log(`[SupabaseStore] Sesión restaurada desde BD (${(buffer.length / 1024).toFixed(0)} KB)`);
+                console.log(`[Store] Sesión restaurada desde conversaciones (${(buffer.length / 1024).toFixed(0)} KB)`);
                 return true;
             } finally {
                 await fs.remove(tmpPath).catch(() => {});
             }
         } catch (e) {
-            console.log('[SupabaseStore] restoreSession error:', e.message);
+            console.log('[Store] restoreSession error:', e.message);
             return false;
         }
     }
@@ -88,11 +109,12 @@ class SupabaseStore {
     async sessionExists(key) {
         try {
             const { data, error } = await this.db
-                .from('sessions')
-                .select('key')
-                .eq('key', key)
-                .maybeSingle();
-            return !error && !!data;
+                .from('conversaciones')
+                .select('id')
+                .eq('whatsapp_id', SESSION_WA)
+                .eq('rol', key)
+                .limit(1);
+            return !error && (data?.length || 0) > 0;
         } catch {
             return false;
         }
