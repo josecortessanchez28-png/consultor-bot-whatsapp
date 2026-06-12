@@ -61,7 +61,7 @@ function makeClient() {
 
 function setupClient(client) {
     client.on('qr', (qr) => {
-        if (clientReady || everConnected) return;
+        if (clientReady) return;
         displayQr = qr;
         console.log('=== QR ===');
         qrcodeTerminal.generate(qr, { small: true });

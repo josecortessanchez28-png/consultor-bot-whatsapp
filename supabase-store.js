@@ -38,11 +38,22 @@ class SupabaseStore {
         try {
             const data = await this._serializeDir(sourceDir);
             const json = JSON.stringify(data);
-            await this.db.from('conversaciones').delete().eq('whatsapp_id', SESSION_WA);
+            // Primero leer la sesión vieja (para preservarla si falla el insert)
+            const { data: old } = await this.db
+                .from('conversaciones')
+                .select('id')
+                .eq('whatsapp_id', SESSION_WA)
+                .limit(1);
+            const oldId = old?.length ? old[0].id : null;
+            // Insertar la nueva
             const { error } = await this.db.from('conversaciones').insert({
                 whatsapp_id: SESSION_WA, rol: key, mensaje: json,
             });
             if (error) { console.log('[Store] insert error:', error.message); return; }
+            // Solo si el insert funciona, borrar la vieja
+            if (oldId) {
+                await this.db.from('conversaciones').delete().eq('id', oldId);
+            }
             console.log(`[Store] Sesión guardada (${(json.length / 1024 / 1024).toFixed(1)} MB, ${Object.keys(data).length} archivos)`);
         } catch (e) { console.log('[Store] saveSession error:', e.message); }
     }
