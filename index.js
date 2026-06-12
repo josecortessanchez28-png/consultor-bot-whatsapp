@@ -107,7 +107,7 @@ app.get('/qr', async (req, res) => {
     }
     const img = await qrcode.toDataURL(qrData);
     res.type('html');
-    res.send(`<meta http-equiv="refresh" content="5"><div style="text-align:center;padding:20px"><img src="${img}" style="max-width:100%;width:300px;height:auto;image-rendering:crisp-edges;border:4px solid #333;border-radius:8px"/></div>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="30"><title>QR Consultor Bot</title><style>body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}</style></head><body><div><img src="${img}" alt="QR"/><p style="color:#888;text-align:center;font-family:sans-serif;font-size:14px">Escanea con WhatsApp → Vincular dispositivo</p></div></body></html>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
