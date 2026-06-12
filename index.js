@@ -74,11 +74,11 @@ function setupClient(client) {
         displayQr = null;
         console.log('WhatsApp conectado correctamente');
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        console.log('[index] Esperando 5s a que Chrome escriba la sesión al disco...');
-        await new Promise(r => setTimeout(r, 5000));
-        console.log('[index] Iniciando backup...');
-        await store.saveSession(SESSION_KEY, sessionDir);
-        console.log('[index] Backup completado');
+        setTimeout(async () => {
+            console.log('[index] Iniciando backup en background...');
+            await store.saveSession(SESSION_KEY, sessionDir);
+            console.log('[index] Backup completado');
+        }, 5000);
         setInterval(() => store.saveSession(SESSION_KEY, sessionDir), 300000);
     });
 
@@ -173,13 +173,19 @@ app.get('/qr-data', async (req, res) => {
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
 
 // Guardar sesión antes de que Render mate el proceso
-process.on('SIGTERM', async () => {
+process.on('SIGTERM', () => {
     console.log('SIGTERM — guardando sesión...');
+    const forceExit = setTimeout(() => process.exit(0), 25000);
     if (everConnected) {
         const dir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        await store.saveSession(SESSION_KEY, dir);
+        store.saveSession(SESSION_KEY, dir).finally(() => {
+            clearTimeout(forceExit);
+            process.exit(0);
+        });
+    } else {
+        clearTimeout(forceExit);
+        process.exit(0);
     }
-    process.exit(0);
 });
 
 app.listen(PORT, () => {

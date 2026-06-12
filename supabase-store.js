@@ -1,9 +1,29 @@
 const { createClient } = require('@supabase/supabase-js');
-const { execFileSync } = require('child_process');
+const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 
 const BUCKET = 'session-bucket';
+
+async function _packDir(srcDir, dstFile) {
+    return new Promise((resolve, reject) => {
+        const output = fs.createWriteStream(dstFile);
+        const archive = archiver('tar', { gzip: false });
+        output.on('close', () => resolve());
+        archive.on('error', (e) => reject(e));
+        archive.pipe(output);
+        archive.directory(srcDir, path.basename(srcDir));
+        archive.finalize();
+    });
+}
+
+async function _unpackDir(srcFile, dstDir) {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileP = promisify(execFile);
+    await execFileP('tar', ['-xf', srcFile, '-C', dstDir], { timeout: 120000 });
+}
 
 class SupabaseStore {
     constructor() {
@@ -24,20 +44,16 @@ class SupabaseStore {
         if (!fs.existsSync(sourceDir)) {
             return console.log('[Store] sourceDir no existe:', sourceDir);
         }
-        const tmpFile = path.join(sourceDir, '..', `session-${key}.tar`);
-        const parentDir = path.dirname(sourceDir);
-        const dirName = path.basename(sourceDir);
+        const tmpFile = path.join(path.dirname(sourceDir), `session-${key}.tar`);
         try {
-            console.log('[Store] tar...');
-            execFileSync('tar', ['-cf', tmpFile, '-C', parentDir, dirName], { stdio: 'pipe', timeout: 120000 });
+            console.log('[Store] empaquetando con archiver...');
+            await _packDir(sourceDir, tmpFile);
             const stat = fs.statSync(tmpFile);
-            console.log('[Store] tar creado:', (stat.size / 1024).toFixed(0), 'KB');
+            console.log('[Store] tar creado:', (stat.size / 1024).toFixed(1), 'KB');
 
             const buffer = fs.readFileSync(tmpFile);
             await this._ensureBucket();
-            const { error } = await this.db.storage.from(BUCKET).upload(`${key}.tar`, buffer, {
-                upsert: true,
-            });
+            const { error } = await this.db.storage.from(BUCKET).upload(`${key}.tar`, buffer, { upsert: true });
             if (error) return console.log('[Store] Storage upload error:', error.message);
             console.log('[Store] Sesión guardada');
         } catch (e) {
@@ -57,9 +73,9 @@ class SupabaseStore {
             }
             const buffer = Buffer.from(await data.arrayBuffer());
             fs.writeFileSync(tmpFile, buffer);
-            console.log('[Store] Descargado:', (buffer.length / 1024).toFixed(0), 'KB');
+            console.log('[Store] Descargado:', (buffer.length / 1024).toFixed(1), 'KB');
 
-            execFileSync('tar', ['-xf', tmpFile, '-C', destDir], { stdio: 'pipe', timeout: 120000 });
+            await _unpackDir(tmpFile, destDir);
             console.log('[Store] Sesión restaurada');
             return true;
         } catch (e) {
@@ -78,5 +94,7 @@ class SupabaseStore {
         } catch { return false; }
     }
 }
+
+module.exports = SupabaseStore;
 
 module.exports = SupabaseStore;
