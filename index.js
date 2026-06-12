@@ -2,7 +2,8 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { Client, RemoteAuth } = require('whatsapp-web.js');
+const SupabaseStore = require('./supabase-store');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 const dns = require('dns');
@@ -41,8 +42,13 @@ let qrData = null;
 let qrDataTime = 0;
 let clientReady = false;
 
+const store = new SupabaseStore();
 const clientOpts = {
-    authStrategy: new LocalAuth({ clientId: 'consultor-bot' }),
+    authStrategy: new RemoteAuth({
+        store,
+        clientId: 'consultor-bot',
+        backupSyncIntervalMs: 300000,
+    }),
     puppeteer: {
         headless: true,
         args: [
@@ -65,6 +71,10 @@ client.on('qr', (qr) => {
 client.on('ready', () => {
     clientReady = true;
     console.log('WhatsApp conectado correctamente');
+});
+
+client.on('remote_session_saved', () => {
+    console.log('Sesión respaldada en Supabase');
 });
 
 client.on('disconnected', (reason) => {
@@ -97,7 +107,7 @@ app.get('/qr', async (req, res) => {
     }
     const img = await qrcode.toDataURL(qrData);
     res.type('html');
-    res.send(`<img src="${img}" style="width:300px;height:300px;image-rendering:pixelated"/>`);
+    res.send(`<meta http-equiv="refresh" content="5"><img src="${img}" style="width:300px;height:300px;image-rendering:pixelated"/>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
