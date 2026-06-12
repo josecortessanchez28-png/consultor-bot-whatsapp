@@ -48,22 +48,38 @@ const SESSION_KEY = 'consultor-bot.zip';
 const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 
 async function ensureSession() {
+    console.log('[index] Verificando sesión en Supabase...');
     const exists = await store.sessionExists(SESSION_KEY);
+    console.log('[index] sessionExists:', exists);
     if (exists) {
-        console.log('Restaurando sesión desde Supabase...');
-        await store.restoreSession(SESSION_KEY, AUTH_DIR);
+        console.log('[index] Restaurando sesión desde Supabase...');
+        const ok = await store.restoreSession(SESSION_KEY, AUTH_DIR);
+        console.log('[index] restoreSession result:', ok);
     } else {
-        console.log('No hay sesión guardada. Se requerirá QR.');
+        console.log('[index] No hay sesión guardada. Se requerirá QR.');
     }
 }
 
 async function backupSession() {
+    console.log('[index] backupSession iniciando...');
     const sessionDir = path.join(AUTH_DIR, 'session-consultor-bot');
+    console.log('[index] sessionDir:', sessionDir);
+    console.log('[index] sessionDir exists:', fs.existsSync(sessionDir));
     if (!fs.existsSync(sessionDir)) {
-        console.log('Directorio de sesión no encontrado');
+        const authExists = fs.existsSync(AUTH_DIR);
+        console.log('[index] AUTH_DIR exists:', authExists);
+        if (authExists) {
+            try {
+                const contents = fs.readdirSync(AUTH_DIR);
+                console.log('[index] Contenido de AUTH_DIR:', contents.join(', '));
+            } catch (e) {
+                console.log('[index] Error listing AUTH_DIR:', e.message);
+            }
+        }
         return;
     }
     await store.saveSession(SESSION_KEY, sessionDir);
+    console.log('[index] backupSession completado');
 }
 
 async function startApp() {
