@@ -62,9 +62,8 @@ function makeClient() {
 function setupClient(client) {
     client.on('qr', (qr) => {
         if (everConnected) return;
-        if (displayQr !== null) return;
         displayQr = qr;
-        console.log('=== QR (único, congelado) ===');
+        console.log('=== QR ===');
         qrcodeTerminal.generate(qr, { small: true });
     });
 
@@ -147,19 +146,17 @@ async function poll(){
     let d=await r.json();
     let img=document.getElementById('qri');
     let st=document.getElementById('status');
-    if(d.qr) {
+    if(d.connected) {
+      img.style.display='none';
+      st.textContent='Conectado';
+    } else if(d.qr) {
       img.style.display='inline';
       img.src=d.qr;
       st.textContent='Escanea para conectar';
-    } else if(d.connected) {
-      img.style.display='none';
-      st.textContent='Conectado';
-    } else {
-      st.textContent='Generando QR...';
     }
   }catch(e){}
 }
-poll(); setInterval(poll, 3000);
+poll(); setInterval(poll, 5000);
 </script>
 </div></body></html>`);
 });
