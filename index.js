@@ -1,5 +1,6 @@
-process.env.PUPPETEER_CACHE_DIR = process.env.PUPPETEER_CACHE_DIR || '/opt/render/.cache/puppeteer';
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
@@ -8,6 +9,31 @@ const dns = require('dns');
 const https = require('https');
 const bot = require('./bot');
 
+function findChrome() {
+    const paths = [
+        path.join(__dirname, 'chrome', 'linux-146.0.7680.31', 'chrome-linux64', 'chrome'),
+        '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.31/chrome-linux64/chrome',
+        '/usr/bin/chromium-browser', '/usr/bin/chromium',
+    ];
+    for (const p of paths) {
+        if (fs.existsSync(p)) return p;
+    }
+    const dir = path.join(__dirname, 'chrome');
+    if (fs.existsSync(dir)) {
+        try {
+            for (const v of fs.readdirSync(dir)) {
+                const exe = path.join(dir, v, 'chrome-linux64', 'chrome');
+                if (fs.existsSync(exe)) return exe;
+            }
+        } catch (_) {}
+    }
+    return null;
+}
+
+const chromePath = findChrome();
+if (chromePath) console.log('Chrome encontrado en:', chromePath);
+else console.log('Chrome NO encontrado, whatsapp-web.js puede fallar');
+
 const app = express();
 const PORT = process.env.PORT || 8080;
 
@@ -15,20 +41,19 @@ let qrData = null;
 let qrDataTime = 0;
 let clientReady = false;
 
-const client = new Client({
+const clientOpts = {
     authStrategy: new LocalAuth({ clientId: 'consultor-bot' }),
     puppeteer: {
         headless: true,
         args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--no-zygote',
-            '--single-process',
-            '--disable-gpu',
+            '--no-sandbox', '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage', '--no-zygote',
+            '--single-process', '--disable-gpu',
         ],
     },
-});
+};
+if (chromePath) clientOpts.puppeteer.executablePath = chromePath;
+const client = new Client(clientOpts);
 
 client.on('qr', (qr) => {
     qrData = qr;
