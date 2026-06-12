@@ -3,10 +3,8 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
-const SupabaseStore = require('./supabase-store');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
-const dns = require('dns');
 const https = require('https');
 const bot = require('./bot');
 
@@ -16,9 +14,7 @@ function findChrome() {
         '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.31/chrome-linux64/chrome',
         '/usr/bin/chromium-browser', '/usr/bin/chromium',
     ];
-    for (const p of paths) {
-        if (fs.existsSync(p)) return p;
-    }
+    for (const p of paths) if (fs.existsSync(p)) return p;
     const dir = path.join(__dirname, 'chrome');
     if (fs.existsSync(dir)) {
         try {
@@ -36,23 +32,17 @@ if (chromePath) console.log('Chrome:', chromePath);
 
 const app = express();
 const PORT = process.env.PORT || 8080;
+const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 
 let frozenQr = null;
 let frozenQrTime = 0;
 let clientReady = false;
 let everConnected = false;
-let client = null;
-
-const store = new SupabaseStore();
-const SESSION_KEY = 'consultor-bot';
-const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
+let currentClient = null;
 
 function makeClient() {
     const opts = {
-        authStrategy: new LocalAuth({
-            clientId: SESSION_KEY,
-            dataPath: AUTH_DIR,
-        }),
+        authStrategy: new LocalAuth({ clientId: 'consultor-bot', dataPath: AUTH_DIR }),
         puppeteer: {
             headless: true,
             args: [
@@ -66,20 +56,9 @@ function makeClient() {
     return new Client(opts);
 }
 
-async function startBot() {
-    const exists = await store.sessionExists(SESSION_KEY);
-    if (exists) {
-        console.log('Restaurando sesión...');
-        await store.restoreSession(SESSION_KEY, AUTH_DIR);
-    } else {
-        console.log('No hay sesión. Se necesitará QR.');
-    }
-
-    client = makeClient();
-
+function setupClient(client) {
     client.on('qr', (qr) => {
         const now = Date.now();
-        // Freeze first QR for 3 minutes
         if (frozenQr && (now - frozenQrTime < 180000)) return;
         frozenQr = qr;
         frozenQrTime = now;
@@ -88,37 +67,17 @@ async function startBot() {
         qrcodeTerminal.generate(qr, { small: true });
     });
 
-    client.on('ready', async () => {
+    client.on('ready', () => {
         clientReady = true;
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
-        // Intentar backup cada minuto hasta que funcione
-        for (let i = 0; i < 5; i++) {
-            const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-            if (fs.existsSync(sessionDir)) {
-                await store.saveSession(SESSION_KEY, sessionDir);
-                // Verificar que se guardó
-                const ok = await store.sessionExists(SESSION_KEY);
-                if (ok) {
-                    console.log('Sesión respaldada y verificada');
-                    break;
-                }
-            }
-            console.log('Backup falló, reintento en 60s...');
-            await new Promise(r => setTimeout(r, 60000));
-        }
     });
 
-    client.on('disconnected', async (reason) => {
+    client.on('disconnected', async () => {
         clientReady = false;
-        console.log('Desconectado:', reason);
-        console.log('Reconectando en 10s...');
+        console.log('Desconectado. Creando nuevo cliente en 10s...');
         await new Promise(r => setTimeout(r, 10000));
-        try {
-            await client.initialize();
-        } catch (e) {
-            console.log('Error reconectando:', e.message);
-        }
+        startClient();
     });
 
     client.on('message', (msg) => {
@@ -126,11 +85,28 @@ async function startBot() {
         if (msg.from.endsWith('@g.us')) return;
         if (msg.author && msg.author !== msg.from) return;
         if (msg.fromMe) return;
-        console.log('Msg de', msg.from, 'tipo:', msg.type);
+        console.log('Msg de', msg.from, 'tipo:', msg.type || msg._data?.type);
         bot.handleMessage(client, msg);
     });
 
     client.initialize();
+}
+
+function startClient() {
+    if (currentClient) {
+        try { currentClient.destroy(); } catch (_) {}
+    }
+    currentClient = makeClient();
+    setupClient(currentClient);
+}
+
+// Self-keepalive to prevent Render free tier spin-down
+function startKeepAlive() {
+    const publicUrl = process.env.RENDER_EXTERNAL_URL || `https://consultor-bot-whatsapp.onrender.com`;
+    console.log('KeepAlive a', publicUrl, 'cada 5 min');
+    setInterval(() => {
+        https.get(`${publicUrl}/healthz`, () => {}).on('error', () => {});
+    }, 300000);
 }
 
 app.get('/', (req, res) => {
@@ -138,9 +114,7 @@ app.get('/', (req, res) => {
 });
 
 app.get('/qr', async (req, res) => {
-    if (!frozenQr) {
-        return res.send('<h3>Generando QR. Espera 10s y recarga.</h3>');
-    }
+    if (!frozenQr) return res.send('<h3>Generando QR. Recarga en 10s.</h3>');
     const img = await qrcode.toDataURL(frozenQr);
     res.type('html');
     res.send(`<!DOCTYPE html>
@@ -158,25 +132,14 @@ p{color:#888;font-size:13px;margin:8px 0}
 <p class="${clientReady ? 'green' : 'red'}">${clientReady ? '\u2713 Conectado' : 'Escanea para conectar'}</p>
 <img src="${img}" alt="QR"/>
 <p>Abre WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo</p>
-<p style="font-size:12px;color:#555">Este QR es válido por 3 minutos</p>
+<p style="font-size:12px;color:#555">QR válido 3 min</p>
 </div></body></html>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
 
-app.get('/diag', (req, res) => {
-    const results = { node: process.version, platform: process.platform };
-    const tasks = [
-        new Promise(r => dns.resolve('web.whatsapp.com', (e, a) => { results.dns = e ? e.message : a[0]; r(); })),
-        new Promise(r => dns.resolve('graph.facebook.com', (e, a) => { results.fb_dns = e ? e.message : a[0]; r(); })),
-        new Promise(r => dns.resolve('api.groq.com', (e, a) => { results.groq_dns = e ? e.message : a[0]; r(); })),
-        new Promise(r => https.get('https://web.whatsapp.com', { timeout: 10000 }, (resp) => { results.whatsapp_http = resp.statusCode; r(); }).on('error', e => { results.whatsapp_http = e.message; r(); })),
-        new Promise(r => https.get('https://api.groq.com', { timeout: 10000 }, (resp) => { results.groq_http = resp.statusCode; r(); }).on('error', e => { results.groq_http = e.message; r(); })),
-    ];
-    Promise.all(tasks).then(() => res.json(results));
-});
-
 app.listen(PORT, () => {
     console.log('Servidor en puerto', PORT);
-    startBot();
+    startClient();
+    startKeepAlive();
 });

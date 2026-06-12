@@ -13,27 +13,33 @@ const SYSTEM_PROMPT = (
 );
 
 async function handleMessage(client, msg) {
+    let waId = null;
     try {
-        const waId = msg.from;
-        let text = '';
+        waId = msg.from;
 
-        if (msg.body && !msg.hasMedia) {
-            text = msg.body.trim();
-        } else if (msg.hasMedia && (msg.type === 'ptt' || msg.type === 'audio')) {
-            const media = await msg.downloadMedia();
-            if (!media || !media.data) {
-                await client.sendMessage(waId, 'No pude descargar el audio.');
-                return;
-            }
-            await client.sendMessage(waId, 'Transcribiendo audio...');
-            text = await groq.transcribe(media.data, media.filename || 'audio.ogg');
-            if (!text) {
-                await client.sendMessage(waId, 'No entendí el audio.');
-                return;
+        // Get text directly from body (works for text messages regardless of hasMedia)
+        let text = (msg.body || '').trim();
+
+        // For audio messages with no body, download and transcribe
+        if (!text) {
+            const msgType = msg.type || msg._data?.type || '';
+            if (msgType === 'ptt' || msgType === 'audio') {
+                try {
+                    const media = await msg.downloadMedia();
+                    if (media && media.data) {
+                        await client.sendMessage(waId, 'Transcribiendo audio...');
+                        text = await groq.transcribe(media.data, media.filename || 'audio.ogg');
+                    }
+                } catch (e) {
+                    console.error('Audio download/transcribe error:', e.message);
+                }
             }
         }
 
-        if (!text) return;
+        if (!text) {
+            console.log('Mensaje sin texto reconocible, ignorando');
+            return;
+        }
 
         const history = await database.getRecentMessages(waId, 15);
 
@@ -45,12 +51,18 @@ async function handleMessage(client, msg) {
 
         await database.saveMessage(waId, 'user', text);
 
-        const resp = await groq.chat(messages) || 'No pude generar respuesta ahora. Intenta de nuevo.';
+        const resp = await groq.chat(messages);
+        const reply = resp || 'No pude generar respuesta ahora. Intenta de nuevo.';
 
-        await database.saveMessage(waId, 'assistant', resp);
-        await client.sendMessage(waId, resp);
+        await database.saveMessage(waId, 'assistant', reply);
+        await client.sendMessage(waId, reply);
     } catch (e) {
-        console.error('handleMessage:', e);
+        console.error('handleMessage error:', e.message);
+        if (waId && client) {
+            try {
+                await client.sendMessage(waId, 'Ocurrió un error al procesar tu mensaje.');
+            } catch (_) {}
+        }
     }
 }
 
