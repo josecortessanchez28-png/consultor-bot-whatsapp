@@ -73,6 +73,8 @@ function setupClient(client) {
         displayQr = null;
         console.log('WhatsApp conectado correctamente');
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        console.log('[index] Esperando 5s a que Chrome escriba la sesión al disco...');
+        await new Promise(r => setTimeout(r, 5000));
         console.log('[index] Iniciando backup...');
         await store.saveSession(SESSION_KEY, sessionDir);
         console.log('[index] Backup completado');
