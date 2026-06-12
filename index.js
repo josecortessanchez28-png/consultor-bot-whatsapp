@@ -61,19 +61,22 @@ function makeClient() {
 
 function setupClient(client) {
     client.on('qr', (qr) => {
-        if (clientReady) return;
+        if (everConnected) return;
         displayQr = qr;
         console.log('=== QR ===');
         qrcodeTerminal.generate(qr, { small: true });
     });
 
-    client.on('ready', async () => {
+    client.on('ready', () => {
         clientReady = true;
         everConnected = true;
         displayQr = null;
         console.log('WhatsApp conectado correctamente');
+        // Backup con delay para que ready no bloquee
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        await store.saveSession(SESSION_KEY, sessionDir);
+        setTimeout(() => store.saveSession(SESSION_KEY, sessionDir), 3000);
+        // Backup periódico cada 5 min
+        setInterval(() => store.saveSession(SESSION_KEY, sessionDir), 300000);
     });
 
     client.on('disconnected', (reason) => {
