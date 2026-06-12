@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
+const SupabaseStore = require('./supabase-store');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
 const https = require('https');
@@ -33,15 +34,18 @@ if (chromePath) console.log('Chrome:', chromePath);
 const app = express();
 const PORT = process.env.PORT || 8080;
 const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
+const SESSION_KEY = 'consultor-bot';
 
-let latestQr = null;
+const store = new SupabaseStore();
+
+let displayQr = null;
 let clientReady = false;
 let everConnected = false;
 let currentClient = null;
 
 function makeClient() {
     const opts = {
-        authStrategy: new LocalAuth({ clientId: 'consultor-bot', dataPath: AUTH_DIR }),
+        authStrategy: new LocalAuth({ clientId: SESSION_KEY, dataPath: AUTH_DIR }),
         puppeteer: {
             headless: true,
             args: [
@@ -57,22 +61,24 @@ function makeClient() {
 
 function setupClient(client) {
     client.on('qr', (qr) => {
-        latestQr = qr;
+        displayQr = qr;
         if (everConnected) return;
         console.log('=== QR ===');
         qrcodeTerminal.generate(qr, { small: true });
     });
 
-    client.on('ready', () => {
+    client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
-        latestQr = null;
+        displayQr = null;
         console.log('WhatsApp conectado correctamente');
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        await store.saveSession(SESSION_KEY, sessionDir);
     });
 
     client.on('disconnected', (reason) => {
         clientReady = false;
-        console.log('Desconectado:', reason, '— esperando reconexión automática...');
+        console.log('Desconectado:', reason);
     });
 
     client.on('message', (msg) => {
@@ -87,32 +93,37 @@ function setupClient(client) {
     client.initialize();
 }
 
-function startClient() {
-    if (currentClient) {
-        try { currentClient.destroy(); } catch (_) {}
+async function startClient() {
+    const exists = await store.sessionExists(SESSION_KEY);
+    if (exists) {
+        console.log('[index] Restaurando sesión...');
+        await store.restoreSession(SESSION_KEY, AUTH_DIR);
+    } else {
+        console.log('[index] No hay sesión guardada. Se requerirá QR único.');
     }
+
+    if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
     currentClient = makeClient();
     setupClient(currentClient);
 }
 
 function startKeepAlive() {
     const url = process.env.RENDER_EXTERNAL_URL || 'https://consultor-bot-whatsapp.onrender.com';
-    console.log('KeepAlive cada 5 min a', url);
+    console.log('KeepAlive cada 4 min');
     const ping = () => https.get(url + '/healthz', () => {}).on('error', () => {});
-    ping();
-    setInterval(ping, 300000);
+    ping(); setTimeout(ping, 120000); setInterval(ping, 240000);
 }
 
 app.get('/', (req, res) => {
-    res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!latestQr });
+    res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!displayQr });
 });
 
 app.get('/qr', async (req, res) => {
-    if (!latestQr) {
-        if (clientReady) return res.send('<h3>Conectado. No se necesita QR.</h3>');
+    if (!displayQr) {
+        if (clientReady) return res.send('<h3>Conectado. Sin QR.</h3>');
         return res.send('<h3>Generando QR. Recarga en 10s.</h3>');
     }
-    const img = await qrcode.toDataURL(latestQr);
+    const img = await qrcode.toDataURL(displayQr);
     res.type('html');
     res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><meta http-equiv="refresh" content="15">
@@ -124,13 +135,11 @@ img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background
 p{color:#888;font-size:13px;margin:8px 0}
 .green{color:#4caf50;font-size:16px}
 .red{color:#f44336;font-size:16px}
-.small{color:#555;font-size:12px}
 </style></head>
 <body><div class="wrap">
 <p class="red">Escanea para conectar</p>
 <img src="${img}" alt="QR"/>
-<p>Abre WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo</p>
-<p class="small">La página se actualiza cada 15s para mostrar el QR vigente</p>
+<p>Abre WhatsApp → Ajustes → Dispositivos vinculados</p>
 </div></body></html>`);
 });
 
