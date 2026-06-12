@@ -18,10 +18,10 @@ async function startBot() {
 
     const sock = makeWASocket({
         auth: state,
-        printQRInTerminal: true,
         browser: ['ConsultorBot', 'Chrome', '1.0'],
         logger: pino({ level: 'error' }),
-        qrTimeout: 60,
+        connectTimeoutMs: 60000,
+        qrTimeout: 120,
         syncFullHistory: false,
         markOnlineOnConnect: false,
     });
