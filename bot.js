@@ -12,9 +12,30 @@ const SYSTEM_PROMPT = (
     '5. Si te envía un audio, ya viene transcrito como texto. Responde al contenido.'
 );
 
-async function handleMessage(jid, text) {
+async function handleMessage(client, msg) {
     try {
-        const history = await database.getRecentMessages(jid, 15);
+        const waId = msg.from;
+        let text = '';
+
+        if (msg.type === 'chat' && msg.body) {
+            text = msg.body.trim();
+        } else if (msg.type === 'ptt' || msg.type === 'audio') {
+            const media = await msg.downloadMedia();
+            if (!media || !media.data) {
+                await client.sendMessage(waId, 'No pude descargar el audio.');
+                return;
+            }
+            await client.sendMessage(waId, 'Transcribiendo audio...');
+            text = await groq.transcribe(media.data, media.filename || 'audio.ogg');
+            if (!text) {
+                await client.sendMessage(waId, 'No entendí el audio.');
+                return;
+            }
+        }
+
+        if (!text) return;
+
+        const history = await database.getRecentMessages(waId, 15);
 
         const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
         for (const [role, content] of history) {
@@ -22,20 +43,15 @@ async function handleMessage(jid, text) {
         }
         messages.push({ role: 'user', content: text });
 
-        await database.saveMessage(jid, 'user', text);
+        await database.saveMessage(waId, 'user', text);
 
         const resp = await groq.chat(messages) || 'No pude generar respuesta ahora. Intenta de nuevo.';
 
-        await database.saveMessage(jid, 'assistant', resp);
-        return resp;
+        await database.saveMessage(waId, 'assistant', resp);
+        await client.sendMessage(waId, resp);
     } catch (e) {
         console.error('handleMessage:', e);
-        return 'Error interno. Intenta de nuevo.';
     }
 }
 
-async function transcribeAudio(buffer) {
-    return await groq.transcribe(buffer);
-}
-
-module.exports = { handleMessage, transcribeAudio };
+module.exports = { handleMessage };

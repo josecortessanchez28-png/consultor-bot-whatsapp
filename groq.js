@@ -29,8 +29,12 @@ async function chat(messages) {
     return null;
 }
 
-async function transcribe(audioBuffer) {
-    const ext = 'ogg';
+async function transcribe(base64Data, filename = 'audio.ogg') {
+    const buffer = Buffer.from(base64Data, 'base64');
+    const ext = (filename.split('.').pop() || 'ogg').toLowerCase();
+    const allowed = ['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'opus', 'wav', 'webm'];
+    if (!allowed.includes(ext)) return '';
+
     const mimeMap = {
         ogg: 'audio/ogg', opus: 'audio/ogg', mp3: 'audio/mpeg',
         mp4: 'audio/mp4', m4a: 'audio/mp4', wav: 'audio/wav',
@@ -40,7 +44,7 @@ async function transcribe(audioBuffer) {
     for (const model of ['whisper-large-v3', 'whisper-large-v3-turbo']) {
         try {
             const form = new FormData();
-            form.append('file', audioBuffer, {
+            form.append('file', buffer, {
                 filename: `audio.${ext}`,
                 contentType: mimeMap[ext] || 'audio/ogg',
             });
