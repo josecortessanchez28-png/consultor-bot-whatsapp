@@ -41,6 +41,7 @@ const PORT = process.env.PORT || 8080;
 let qrData = null;
 let qrDataTime = 0;
 let clientReady = false;
+let everConnected = false;
 
 const store = new SupabaseStore();
 const clientOpts = {
@@ -64,12 +65,14 @@ const client = new Client(clientOpts);
 client.on('qr', (qr) => {
     qrData = qr;
     qrDataTime = Date.now();
+    if (everConnected) return;
     console.log('=== NUEVO QR GENERADO ===');
     qrcodeTerminal.generate(qr, { small: true });
 });
 
 client.on('ready', () => {
     clientReady = true;
+    everConnected = true;
     console.log('WhatsApp conectado correctamente');
 });
 
@@ -79,7 +82,7 @@ client.on('remote_session_saved', () => {
 
 client.on('disconnected', (reason) => {
     clientReady = false;
-    console.log('WhatsApp desconectado:', reason);
+    console.log('WhatsApp desconectado. Reconnectando...');
 });
 
 function handleIncoming(msg) {
@@ -107,7 +110,7 @@ app.get('/qr', async (req, res) => {
     }
     const img = await qrcode.toDataURL(qrData);
     res.type('html');
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="30"><title>QR Consultor Bot</title><style>body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}</style></head><body><div><img src="${img}" alt="QR"/><p style="color:#888;text-align:center;font-family:sans-serif;font-size:14px">Escanea con WhatsApp → Vincular dispositivo</p></div></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>QR Consultor Bot</title><style>body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}</style></head><body><div><p style="color:#4caf50;text-align:center;font-family:sans-serif;font-size:16px;margin-bottom:10px">${everConnected ? '✓ Conectado (QR innecesario)' : 'Escanea para conectar'}</p><img src="${img}" alt="QR"/><p style="color:#888;text-align:center;font-family:sans-serif;font-size:13px">Abre WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo</p></div></body></html>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
