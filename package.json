@@ -1,0 +1,21 @@
+{
+  "name": "consultor-bot-whatsapp",
+  "version": "1.0.0",
+  "description": "Agente consultor IA via WhatsApp",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "postinstall": "npx puppeteer browsers install chrome || true"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "whatsapp-web.js": "^1.23.1",
+    "puppeteer": "^22.0.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.0",
+    "axios": "^1.7.0",
+    "form-data": "^4.0.0"
+  }
+}
