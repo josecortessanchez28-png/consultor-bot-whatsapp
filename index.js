@@ -3,6 +3,8 @@ const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
+const dns = require('dns');
+const https = require('https');
 const bot = require('./bot');
 
 const app = express();
@@ -32,8 +34,6 @@ client.on('qr', (qr) => {
     qrDataTime = Date.now();
     console.log('=== NUEVO QR GENERADO ===');
     qrcodeTerminal.generate(qr, { small: true });
-    console.log('Escanea el QR desde el móvil secundario');
-    console.log('También en /qr');
 });
 
 client.on('ready', () => {
@@ -50,7 +50,6 @@ client.on('message', async (msg) => {
     if (msg.from === 'status@broadcast') return;
     if (msg.from.endsWith('@g.us')) return;
     if (msg.author && msg.author !== msg.from) return;
-    console.log('Mensaje de:', msg.from, msg.body?.slice(0, 50));
     await bot.handleMessage(client, msg);
 });
 
@@ -60,17 +59,29 @@ app.get('/', (req, res) => {
 
 app.get('/qr', async (req, res) => {
     if (!qrData) {
-        return res.send('<h3>QR no disponible aún. Revisa los logs de Render.</h3>');
+        return res.send('<h3>QR no disponible. Revisa los logs de Render.</h3>');
     }
     if (Date.now() - qrDataTime > 180000) {
-        return res.send('<h3>QR expirado. Espera a que se genere uno nuevo en los logs.</h3>');
+        return res.send('<h3>QR expirado. Espera nuevo QR en logs.</h3>');
     }
     const img = await qrcode.toDataURL(qrData);
     res.type('html');
-    res.send(`<img src="${img}" style="width:300px;height:300px;image-rendering:pixelated"/>`);
+    res.send(`<img src="${img}" style="width:300px;height:300px;image-render-ing:pixelated"/>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+
+app.get('/diag', (req, res) => {
+    const results = { node: process.version, platform: process.platform };
+    const tasks = [
+        new Promise(r => dns.resolve('web.whatsapp.com', (e, a) => { results.dns = e ? e.message : a[0]; r(); })),
+        new Promise(r => dns.resolve('graph.facebook.com', (e, a) => { results.fb_dns = e ? e.message : a[0]; r(); })),
+        new Promise(r => dns.resolve('api.groq.com', (e, a) => { results.groq_dns = e ? e.message : a[0]; r(); })),
+        new Promise(r => https.get('https://web.whatsapp.com', { timeout: 10000 }, (resp) => { results.whatsapp_http = resp.statusCode; r(); }).on('error', e => { results.whatsapp_http = e.message; r(); })),
+        new Promise(r => https.get('https://api.groq.com', { timeout: 10000 }, (resp) => { results.groq_http = resp.statusCode; r(); }).on('error', e => { results.groq_http = e.message; r(); })),
+    ];
+    Promise.all(tasks).then(() => res.json(results));
+});
 
 app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
 
