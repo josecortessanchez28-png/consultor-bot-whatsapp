@@ -2,7 +2,7 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { Client, RemoteAuth } = require('whatsapp-web.js');
+const { Client, LocalAuth } = require('whatsapp-web.js');
 const SupabaseStore = require('./supabase-store');
 const qrcode = require('qrcode');
 const qrcodeTerminal = require('qrcode-terminal');
@@ -44,89 +44,114 @@ let clientReady = false;
 let everConnected = false;
 
 const store = new SupabaseStore();
-const clientOpts = {
-    authStrategy: new RemoteAuth({
-        store,
-        clientId: 'consultor-bot',
-        backupSyncIntervalMs: 300000,
-    }),
-    puppeteer: {
-        headless: true,
-        args: [
-            '--no-sandbox', '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage', '--no-zygote',
-            '--single-process', '--disable-gpu',
-        ],
-    },
-};
-if (chromePath) clientOpts.puppeteer.executablePath = chromePath;
-const client = new Client(clientOpts);
+const SESSION_KEY = 'consultor-bot.zip';
+const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 
-client.on('qr', (qr) => {
-    qrData = qr;
-    qrDataTime = Date.now();
-    if (everConnected) return;
-    console.log('=== NUEVO QR GENERADO ===');
-    qrcodeTerminal.generate(qr, { small: true });
-});
-
-client.on('ready', () => {
-    clientReady = true;
-    everConnected = true;
-    console.log('WhatsApp conectado correctamente');
-});
-
-client.on('remote_session_saved', () => {
-    console.log('Sesión respaldada en Supabase');
-});
-
-client.on('disconnected', (reason) => {
-    clientReady = false;
-    console.log('WhatsApp desconectado. Reconnectando...');
-});
-
-function handleIncoming(msg) {
-    if (msg.from === 'status@broadcast') return;
-    if (msg.from.endsWith('@g.us')) return;
-    if (msg.author && msg.author !== msg.from) return;
-    if (msg.fromMe) return;
-    console.log('Mensaje recibido de', msg.from, 'tipo:', msg.type, 'texto:', (msg.body || '').slice(0, 60));
-    bot.handleMessage(client, msg);
+async function ensureSession() {
+    const exists = await store.sessionExists(SESSION_KEY);
+    if (exists) {
+        console.log('Restaurando sesión desde Supabase...');
+        await store.restoreSession(SESSION_KEY, AUTH_DIR);
+    } else {
+        console.log('No hay sesión guardada. Se requerirá QR.');
+    }
 }
 
-client.on('message', handleIncoming);
-client.on('message_create', handleIncoming);
-
-app.get('/', (req, res) => {
-    res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!qrData });
-});
-
-app.get('/qr', async (req, res) => {
-    if (!qrData) {
-        return res.send('<h3>QR no disponible. Revisa los logs de Render.</h3>');
+async function backupSession() {
+    const sessionDir = path.join(AUTH_DIR, 'session-consultor-bot');
+    if (!fs.existsSync(sessionDir)) {
+        console.log('Directorio de sesión no encontrado');
+        return;
     }
-    if (Date.now() - qrDataTime > 180000) {
-        return res.send('<h3>QR expirado. Espera nuevo QR en logs.</h3>');
+    await store.saveSession(SESSION_KEY, sessionDir);
+}
+
+async function startApp() {
+    await ensureSession();
+
+    const clientOpts = {
+        authStrategy: new LocalAuth({
+            clientId: 'consultor-bot',
+            dataPath: AUTH_DIR,
+        }),
+        puppeteer: {
+            headless: true,
+            args: [
+                '--no-sandbox', '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage', '--no-zygote',
+                '--single-process', '--disable-gpu',
+            ],
+        },
+    };
+    if (chromePath) clientOpts.puppeteer.executablePath = chromePath;
+    const client = new Client(clientOpts);
+
+    client.on('qr', (qr) => {
+        qrData = qr;
+        qrDataTime = Date.now();
+        if (everConnected) return;
+        console.log('=== NUEVO QR GENERADO ===');
+        qrcodeTerminal.generate(qr, { small: true });
+    });
+
+    client.on('ready', async () => {
+        clientReady = true;
+        everConnected = true;
+        console.log('WhatsApp conectado correctamente');
+        await backupSession();
+        setInterval(() => backupSession(), 300000);
+    });
+
+    client.on('disconnected', (reason) => {
+        clientReady = false;
+        console.log('WhatsApp desconectado:', reason);
+    });
+
+    function handleIncoming(msg) {
+        if (msg.from === 'status@broadcast') return;
+        if (msg.from.endsWith('@g.us')) return;
+        if (msg.author && msg.author !== msg.from) return;
+        if (msg.fromMe) return;
+        console.log('Mensaje recibido de', msg.from, 'tipo:', msg.type, 'texto:', (msg.body || '').slice(0, 60));
+        bot.handleMessage(client, msg);
     }
-    const img = await qrcode.toDataURL(qrData);
-    res.type('html');
-    res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>QR Consultor Bot</title><style>body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}</style></head><body><div><p style="color:#4caf50;text-align:center;font-family:sans-serif;font-size:16px;margin-bottom:10px">${everConnected ? '✓ Conectado (QR innecesario)' : 'Escanea para conectar'}</p><img src="${img}" alt="QR"/><p style="color:#888;text-align:center;font-family:sans-serif;font-size:13px">Abre WhatsApp → Ajustes → Dispositivos vinculados → Vincular dispositivo</p></div></body></html>`);
+
+    client.on('message', handleIncoming);
+
+    app.get('/', (req, res) => {
+        res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!qrData });
+    });
+
+    app.get('/qr', async (req, res) => {
+        if (!qrData) {
+            return res.send('<h3>QR no disponible. Revisa los logs de Render.</h3>');
+        }
+        if (Date.now() - qrDataTime > 180000) {
+            return res.send('<h3>QR expirado. Espera nuevo QR en logs.</h3>');
+        }
+        const img = await qrcode.toDataURL(qrData);
+        res.type('html');
+        res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta http-equiv="refresh" content="60"><title>QR Consultor Bot</title><style>body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}</style></head><body><div><p style="color:#4caf50;text-align:center;font-family:sans-serif;font-size:16px;margin-bottom:10px">${everConnected ? '\u2713 Conectado (QR innecesario)' : 'Escanea para conectar'}</p><img src="${img}" alt="QR"/><p style="color:#888;text-align:center;font-family:sans-serif;font-size:13px">Abre WhatsApp \u2192 Ajustes \u2192 Dispositivos vinculados \u2192 Vincular dispositivo</p></div></body></html>`);
+    });
+
+    app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+
+    app.get('/diag', (req, res) => {
+        const results = { node: process.version, platform: process.platform };
+        const tasks = [
+            new Promise(r => dns.resolve('web.whatsapp.com', (e, a) => { results.dns = e ? e.message : a[0]; r(); })),
+            new Promise(r => dns.resolve('graph.facebook.com', (e, a) => { results.fb_dns = e ? e.message : a[0]; r(); })),
+            new Promise(r => dns.resolve('api.groq.com', (e, a) => { results.groq_dns = e ? e.message : a[0]; r(); })),
+            new Promise(r => https.get('https://web.whatsapp.com', { timeout: 10000 }, (resp) => { results.whatsapp_http = resp.statusCode; r(); }).on('error', e => { results.whatsapp_http = e.message; r(); })),
+            new Promise(r => https.get('https://api.groq.com', { timeout: 10000 }, (resp) => { results.groq_http = resp.statusCode; r(); }).on('error', e => { results.groq_http = e.message; r(); })),
+        ];
+        Promise.all(tasks).then(() => res.json(results));
+    });
+
+    client.initialize();
+}
+
+app.listen(PORT, () => {
+    console.log(`Servidor en puerto ${PORT}`);
+    startApp().catch(e => console.error('startApp error:', e));
 });
-
-app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
-
-app.get('/diag', (req, res) => {
-    const results = { node: process.version, platform: process.platform };
-    const tasks = [
-        new Promise(r => dns.resolve('web.whatsapp.com', (e, a) => { results.dns = e ? e.message : a[0]; r(); })),
-        new Promise(r => dns.resolve('graph.facebook.com', (e, a) => { results.fb_dns = e ? e.message : a[0]; r(); })),
-        new Promise(r => dns.resolve('api.groq.com', (e, a) => { results.groq_dns = e ? e.message : a[0]; r(); })),
-        new Promise(r => https.get('https://web.whatsapp.com', { timeout: 10000 }, (resp) => { results.whatsapp_http = resp.statusCode; r(); }).on('error', e => { results.whatsapp_http = e.message; r(); })),
-        new Promise(r => https.get('https://api.groq.com', { timeout: 10000 }, (resp) => { results.groq_http = resp.statusCode; r(); }).on('error', e => { results.groq_http = e.message; r(); })),
-    ];
-    Promise.all(tasks).then(() => res.json(results));
-});
-
-app.listen(PORT, () => console.log(`Servidor en puerto ${PORT}`));
-
-client.initialize();

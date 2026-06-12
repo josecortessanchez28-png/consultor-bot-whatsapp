@@ -1,6 +1,8 @@
+const { createClient } = require('@supabase/supabase-js');
 const fs = require('fs-extra');
 const path = require('path');
-const { createClient } = require('@supabase/supabase-js');
+const archiver = require('archiver');
+const unzipper = require('unzipper');
 
 const BUCKET = 'whatsapp-sessions';
 
@@ -21,48 +23,64 @@ class SupabaseStore {
         this.initialized = true;
     }
 
-    async sessionExists({ session }) {
+    async sessionExists(key) {
         await this._ensureBucket();
         try {
-            const { data } = await this.db.storage.from(BUCKET).list('', { search: `${session}.zip` });
+            const { data } = await this.db.storage.from(BUCKET).list('', { search: key });
             return !!data?.length;
         } catch { return false; }
     }
 
-    async save({ session }) {
+    async saveSession(key, sourceDir) {
         await this._ensureBucket();
-        const filePath = `${session}.zip`;
+        if (!await fs.pathExists(sourceDir)) return;
+        const tmpPath = path.join(__dirname, `tmp-${key}`);
         try {
-            if (await fs.pathExists(filePath)) {
-                const buffer = await fs.readFile(filePath);
-                await this.db.storage.from(BUCKET).upload(`${session}.zip`, buffer, {
-                    contentType: 'application/zip',
-                    upsert: true,
-                });
-            }
+            await new Promise((resolve, reject) => {
+                const output = fs.createWriteStream(tmpPath);
+                const archive = archiver('zip', { zlib: { level: 9 } });
+                output.on('close', resolve);
+                archive.on('error', reject);
+                archive.pipe(output);
+                archive.directory(sourceDir, 'session-consultor-bot');
+                archive.finalize();
+            });
+            const buffer = await fs.readFile(tmpPath);
+            await this.db.storage.from(BUCKET).upload(key, buffer, {
+                contentType: 'application/zip',
+                upsert: true,
+            });
+            console.log(`Sesión respaldada en Supabase (${(buffer.length / 1024).toFixed(0)} KB)`);
         } catch (e) {
-            console.error('SupabaseStore.save error:', e.message);
+            console.error('saveSession error:', e.message);
+        } finally {
+            await fs.remove(tmpPath).catch(() => {});
         }
     }
 
-    async extract({ session, path: destPath }) {
+    async restoreSession(key, destDir) {
         await this._ensureBucket();
+        const tmpPath = path.join(__dirname, `tmp-${key}`);
         try {
-            const { data } = await this.db.storage.from(BUCKET).download(`${session}.zip`);
-            if (data) {
-                const buffer = Buffer.from(await data.arrayBuffer());
-                await fs.writeFile(destPath, buffer);
-            }
+            const { data, error } = await this.db.storage.from(BUCKET).download(key);
+            if (error || !data) return false;
+            const buffer = Buffer.from(await data.arrayBuffer());
+            await fs.writeFile(tmpPath, buffer);
+            await fs.ensureDir(destDir);
+            await new Promise((resolve, reject) => {
+                fs.createReadStream(tmpPath)
+                    .pipe(unzipper.Extract({ path: destDir }))
+                    .on('close', resolve)
+                    .on('error', reject);
+            });
+            console.log(`Sesión restaurada de Supabase (${(buffer.length / 1024).toFixed(0)} KB)`);
+            return true;
         } catch (e) {
-            console.error('SupabaseStore.extract error:', e.message);
+            console.error('restoreSession error:', e.message);
+            return false;
+        } finally {
+            await fs.remove(tmpPath).catch(() => {});
         }
-    }
-
-    async delete({ session }) {
-        await this._ensureBucket();
-        try {
-            await this.db.storage.from(BUCKET).remove([`${session}.zip`]);
-        } catch {}
     }
 }
 
