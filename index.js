@@ -92,7 +92,7 @@ app.get('/qr', async (req, res) => {
     }
     const img = await qrcode.toDataURL(qrData);
     res.type('html');
-    res.send(`<img src="${img}" style="width:300px;height:300px;image-render-ing:pixelated"/>`);
+    res.send(`<img src="${img}" style="width:300px;height:300px;image-rendering:pixelated"/>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));

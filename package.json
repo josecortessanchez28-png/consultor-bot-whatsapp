@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "postinstall": "npx @puppeteer/browsers install chrome@146.0.7680.31 || true"
+    "postinstall": "npx @puppeteer/browsers install chrome@146.0.7680.31 2>/dev/null || npx @puppeteer/browsers install chrome@latest 2>/dev/null || true"
   },
   "dependencies": {
     "whatsapp-web.js": "^1.26.0",
