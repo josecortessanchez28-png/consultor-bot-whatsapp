@@ -107,7 +107,7 @@ app.get('/qr', async (req, res) => {
     }
     const img = await qrcode.toDataURL(qrData);
     res.type('html');
-    res.send(`<meta http-equiv="refresh" content="5"><img src="${img}" style="width:300px;height:300px;image-rendering:pixelated"/>`);
+    res.send(`<meta http-equiv="refresh" content="5"><div style="text-align:center;padding:20px"><img src="${img}" style="max-width:100%;width:300px;height:auto;image-rendering:crisp-edges;border:4px solid #333;border-radius:8px"/></div>`);
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
