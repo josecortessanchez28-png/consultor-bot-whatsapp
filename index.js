@@ -12,10 +12,13 @@ let qrData = null;
 let qrDataTime = 0;
 let clientReady = false;
 
+const CHROME_PATH = process.env.CHROME_PATH || '/usr/bin/chromium-browser';
+
 const client = new Client({
     authStrategy: new LocalAuth({ clientId: 'consultor-bot' }),
     puppeteer: {
         headless: true,
+        executablePath: CHROME_PATH,
         args: [
             '--no-sandbox',
             '--disable-setuid-sandbox',
