@@ -62,8 +62,9 @@ function makeClient() {
 function setupClient(client) {
     client.on('qr', (qr) => {
         if (everConnected) return;
+        if (displayQr !== null) return;
         displayQr = qr;
-        console.log('=== QR ===');
+        console.log('=== QR (único, congelado) ===');
         qrcodeTerminal.generate(qr, { small: true });
     });
 
@@ -124,12 +125,8 @@ app.get('/', (req, res) => {
 });
 
 app.get('/qr', async (req, res) => {
-    if (!displayQr) {
-        if (clientReady) return res.send('<h3>Conectado. Sin QR.</h3>');
-        return res.send('<h3>Generando QR. Recarga en 10s.</h3>');
-    }
-    const img = await qrcode.toDataURL(displayQr);
     res.type('html');
+    const img = displayQr ? await qrcode.toDataURL(displayQr) : null;
     res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>QR Consultor Bot</title>
 <style>
@@ -139,26 +136,38 @@ img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background
 p{color:#888;font-size:13px;margin:8px 0}
 </style></head>
 <body><div class="wrap">
-<p class="red">Escanea para conectar</p>
-<img id="qri" src="${img}" alt="QR"/>
+<p id="status">${displayQr ? 'Escanea para conectar' : clientReady ? 'Conectado' : 'Generando QR...'}</p>
+<img id="qri" src="${img || ''}" alt="QR" style="${img ? '' : 'display:none'}"/>
 <p>Abre WhatsApp → Ajustes → Dispositivos vinculados</p>
 <script>
-setInterval(async ()=>{
+async function poll(){
   try {
     let r=await fetch('/qr-data');
     if(!r.ok) return;
     let d=await r.json();
-    if(d.qr) document.getElementById('qri').src=d.qr;
+    let img=document.getElementById('qri');
+    let st=document.getElementById('status');
+    if(d.qr) {
+      img.style.display='inline';
+      img.src=d.qr;
+      st.textContent='Escanea para conectar';
+    } else if(d.connected) {
+      img.style.display='none';
+      st.textContent='Conectado';
+    } else {
+      st.textContent='Generando QR...';
+    }
   }catch(e){}
-},5000);
+}
+poll(); setInterval(poll, 3000);
 </script>
 </div></body></html>`);
 });
 
 app.get('/qr-data', async (req, res) => {
-    if (!displayQr) return res.json({ qr: null });
+    if (!displayQr) return res.json({ qr: null, connected: clientReady });
     const img = await qrcode.toDataURL(displayQr);
-    res.json({ qr: img });
+    res.json({ qr: img, connected: clientReady });
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));

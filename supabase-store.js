@@ -1,89 +1,97 @@
 const { createClient } = require('@supabase/supabase-js');
-const fs = require('fs-extra');
+const { execSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-const SESSION_WA = '__session__';
+const BUCKET = 'session-bucket';
 
 class SupabaseStore {
     constructor() {
-        this.db = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+        const key = process.env.SUPABASE_KEY;
+        this.db = createClient(process.env.SUPABASE_URL, key);
+        this.serviceKey = key;
     }
 
-    async _serializeDir(dirPath, prefix = '') {
-        const result = {};
-        const entries = await fs.readdir(dirPath, { withFileTypes: true });
-        for (const entry of entries) {
-            const fullPath = path.join(dirPath, entry.name);
-            const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
-            if (entry.isDirectory()) {
-                Object.assign(result, await this._serializeDir(fullPath, relPath));
-            } else if (entry.isFile()) {
-                result[relPath] = (await fs.readFile(fullPath)).toString('base64');
+    async _ensureBucket() {
+        try {
+            const { data: buckets, error } = await this.db.storage.listBuckets();
+            if (error) {
+                console.log('[Store] listBuckets error:', error.message);
+                return;
             }
-        }
-        return result;
-    }
-
-    async _deserializeDir(dirPath, data) {
-        await fs.ensureDir(dirPath);
-        for (const [relPath, b64] of Object.entries(data)) {
-            const fullPath = path.join(dirPath, relPath);
-            await fs.ensureDir(path.dirname(fullPath));
-            await fs.writeFile(fullPath, Buffer.from(b64, 'base64'));
+            if (!buckets?.find(b => b.name === BUCKET)) {
+                const { error: ce } = await this.db.storage.createBucket(BUCKET, { public: false });
+                if (ce) console.log('[Store] createBucket error:', ce.message);
+                else console.log('[Store] Bucket creado:', BUCKET);
+            }
+        } catch (e) {
+            console.log('[Store] _ensureBucket error:', e.message);
         }
     }
 
     async saveSession(key, sourceDir) {
-        if (!await fs.pathExists(sourceDir)) return;
+        if (!fs.existsSync(sourceDir)) {
+            console.log('[Store] sourceDir no existe:', sourceDir);
+            return;
+        }
+        const tmpFile = path.join(os.tmpdir(), `session-${key}.tar.gz`);
+        const parentDir = path.dirname(sourceDir);
+        const dirName = path.basename(sourceDir);
         try {
-            const data = await this._serializeDir(sourceDir);
-            const json = JSON.stringify(data);
-            // Primero leer la sesión vieja (para preservarla si falla el insert)
-            const { data: old } = await this.db
-                .from('conversaciones')
-                .select('id')
-                .eq('whatsapp_id', SESSION_WA)
-                .limit(1);
-            const oldId = old?.length ? old[0].id : null;
-            // Insertar la nueva
-            const { error } = await this.db.from('conversaciones').insert({
-                whatsapp_id: SESSION_WA, rol: key, mensaje: json,
+            console.log('[Store] Comprimiendo con tar...');
+            execSync(`tar -czf "${tmpFile}" -C "${parentDir}" "${dirName}"`, { stdio: 'pipe', timeout: 30000 });
+            const stat = fs.statSync(tmpFile);
+            console.log('[Store] tar.gz creado:', (stat.size / 1024).toFixed(0), 'KB');
+
+            const buffer = fs.readFileSync(tmpFile);
+            await this._ensureBucket();
+            const { error } = await this.db.storage.from(BUCKET).upload(`${key}.tar.gz`, buffer, {
+                contentType: 'application/gzip',
+                upsert: true,
             });
-            if (error) { console.log('[Store] insert error:', error.message); return; }
-            // Solo si el insert funciona, borrar la vieja
-            if (oldId) {
-                await this.db.from('conversaciones').delete().eq('id', oldId);
+            if (error) {
+                console.log('[Store] Storage upload error:', error.message);
+                return;
             }
-            console.log(`[Store] Sesión guardada (${(json.length / 1024 / 1024).toFixed(1)} MB, ${Object.keys(data).length} archivos)`);
-        } catch (e) { console.log('[Store] saveSession error:', e.message); }
+            console.log(`[Store] Sesión guardada en Storage (${(stat.size / 1024).toFixed(0)} KB)`);
+        } catch (e) {
+            console.log('[Store] saveSession error:', e.message);
+        } finally {
+            try { fs.unlinkSync(tmpFile); } catch (_) {}
+        }
     }
 
     async restoreSession(key, destDir) {
+        const tmpFile = path.join(os.tmpdir(), `session-${key}.tar.gz`);
         try {
-            const { data, error } = await this.db
-                .from('conversaciones')
-                .select('mensaje')
-                .eq('whatsapp_id', SESSION_WA)
-                .eq('rol', key)
-                .order('created_at', { ascending: false })
-                .limit(1);
-            if (error || !data?.length) return false;
-            const parsed = JSON.parse(data[0].mensaje);
-            await this._deserializeDir(destDir, parsed);
-            console.log(`[Store] Sesión restaurada (${Object.keys(parsed).length} archivos)`);
+            await this._ensureBucket();
+            const { data, error } = await this.db.storage.from(BUCKET).download(`${key}.tar.gz`);
+            if (error || !data) {
+                console.log('[Store] No hay sesión en Storage');
+                return false;
+            }
+            const buffer = Buffer.from(await data.arrayBuffer());
+            fs.writeFileSync(tmpFile, buffer);
+            console.log('[Store] Descargado:', (buffer.length / 1024).toFixed(0), 'KB');
+
+            fs.mkdirSync(destDir, { recursive: true });
+            execSync(`tar -xzf "${tmpFile}" -C "${destDir}"`, { stdio: 'pipe', timeout: 30000 });
+            console.log('[Store] Sesión restaurada desde Storage');
             return true;
-        } catch (e) { console.log('[Store] restoreSession error:', e.message); return false; }
+        } catch (e) {
+            console.log('[Store] restoreSession error:', e.message);
+            return false;
+        } finally {
+            try { fs.unlinkSync(tmpFile); } catch (_) {}
+        }
     }
 
     async sessionExists(key) {
         try {
-            const { data, error } = await this.db
-                .from('conversaciones')
-                .select('id')
-                .eq('whatsapp_id', SESSION_WA)
-                .eq('rol', key)
-                .limit(1);
-            return !error && (data?.length || 0) > 0;
+            await this._ensureBucket();
+            const { data, error } = await this.db.storage.from(BUCKET).list('', { search: `${key}.tar.gz` });
+            return !error && !!data?.length;
         } catch { return false; }
     }
 }
