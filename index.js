@@ -195,6 +195,21 @@ async function startClient() {
     }
 
     await connectClient();
+
+    // Si se restauró una sesión pero los 3 intentos fallaron, el backup está corrupto
+    if (sessionRestored && !clientReady) {
+        console.log('[index] Sesión restaurada no válida — limpiando backup corrupto de Storage');
+        sessionRestored = false;
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+        try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+        if (currentClient) {
+            try { await currentClient.destroy(); } catch (_) {}
+            currentClient = null;
+        }
+        console.log('[index] Backup corrupto eliminado. Ir a /pair para vincular.');
+    }
+
     clientStarting = false;
 }
 
