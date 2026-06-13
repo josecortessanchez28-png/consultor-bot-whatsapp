@@ -137,8 +137,9 @@ async function startPairing(phone) {
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
 
-        console.log('[pair] Creando cliente y esperando código...');
-        currentClient = makeClient(phone);
+        console.log('[pair] Creando cliente sin pairWithPhoneNumber...');
+        // Crear SIN pairWithPhoneNumber — el QR flow arranca
+        currentClient = makeClient();
 
         currentClient.on('code', (code) => {
             console.log('[pair] Código recibido (evento):', code);
@@ -149,38 +150,38 @@ async function startPairing(phone) {
         await currentClient.initialize();
         console.log('[pair] initialize() completado');
 
-        // Esperar hasta 90s a que llegue el code event
-        if (!pendingPairingCode) {
-            console.log('[pair] Evento code no llegó, esperando...');
-            await new Promise((resolve) => {
-                const check = setInterval(() => {
-                    if (pendingPairingCode) {
-                        clearInterval(check);
-                        resolve();
+        // Esperar a que la página esté lista e intentar requestPairingCode
+        if (currentClient.pupPage) {
+            // Esperar un momento para que la página se estabilice
+            await new Promise(r => setTimeout(r, 3000));
+
+            for (let i = 0; i < 10 && !pendingPairingCode; i++) {
+                console.log(`[pair] Intento manual ${i + 1}/10...`);
+                try {
+                    const code = await Promise.race([
+                        currentClient.requestPairingCode(phone),
+                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout 30s')), 30000))
+                    ]);
+                    if (code) {
+                        console.log('[pair] Código manual:', code);
+                        pendingPairingCode = code;
+                        break;
                     }
-                }, 500);
-                setTimeout(() => {
-                    clearInterval(check);
-                    resolve(); // time out, continuamos al fallback
-                }, 90000);
-            });
+                } catch (e2) {
+                    console.log(`[pair] Intento ${i + 1} falló:`, e2?.message?.slice(0, 50) || e2);
+                    if (!pendingPairingCode) {
+                        await new Promise(r => setTimeout(r, 3000));
+                    }
+                }
+            }
         }
 
-        // Fallback: si no llegó el evento, llamar requestPairingCode manualmente
-        if (!pendingPairingCode && currentClient.pupPage) {
-            console.log('[pair] Fallback: llamando requestPairingCode manual...');
-            try {
-                const code = await currentClient.requestPairingCode(phone);
-                if (code) {
-                    console.log('[pair] Código manual:', code);
-                    pendingPairingCode = code;
-                }
-            } catch (e2) {
-                console.log('[pair] Fallback falló:', e2?.message || e2);
-            }
+        if (!pendingPairingCode) {
+            pendingPairingError = 'No se pudo generar el código tras varios intentos';
         }
     } catch (e) {
         console.log('[pair] Error:', e?.message || e);
+        pendingPairingError = 'Error: ' + (e?.message || e);
     } finally {
         pairingInProgress = false;
     }
