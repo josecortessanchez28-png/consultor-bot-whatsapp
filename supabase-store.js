@@ -3,16 +3,14 @@ const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execFileSync } = require('child_process');
-
 const BUCKET = 'session-bucket';
 
 async function _packDir(srcDir, dstFile) {
     const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-'));
     const tmpDir = path.join(tmpRoot, path.basename(srcDir));
     try {
-        // Usar cp -a del sistema (maneja sockets, FIFOs, archivos bloqueados)
-        execFileSync('cp', ['-a', srcDir, tmpRoot], { timeout: 30000 });
+        // fs.cp es cross-platform (Node >=16.7) y maneja todo tipo de archivos
+        await fs.promises.cp(srcDir, tmpDir, { recursive: true, force: true });
         const entries = fs.readdirSync(tmpDir);
         console.log('[Store] archivos en sesión:', entries.length);
         return new Promise((resolve, reject) => {
