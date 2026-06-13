@@ -32,6 +32,7 @@ const chromePath = findChrome();
 if (chromePath) console.log('Chrome:', chromePath);
 
 const app = express();
+app.use(express.urlencoded({ extended: true }));
 const PORT = process.env.PORT || 8080;
 const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 const SESSION_KEY = 'consultor-bot';
@@ -104,7 +105,7 @@ async function startClient() {
         console.log('[index] Restaurando sesión...');
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
     } else {
-        console.log('[index] No hay sesión guardada. Se requerirá QR único.');
+        console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
     }
 
     if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
@@ -123,6 +124,82 @@ app.get('/', (req, res) => {
     res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!displayQr });
 });
 
+app.get('/pair', (req, res) => {
+    if (clientReady) return res.send('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conectado</title><style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;text-align:center}</style></head><body><h2>Conectado</h2><p>El bot ya está vinculado a WhatsApp.</p></body></html>');
+    if (!currentClient) return res.status(500).send('Cliente no disponible');
+    res.type('html');
+    res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Vincular consultor</title>
+<style>
+body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}
+.wrap{text-align:center;max-width:420px}
+input{padding:14px;font-size:18px;width:100%;border:1px solid #444;border-radius:8px;background:#222;color:#eee;text-align:center;margin:12px 0;box-sizing:border-box}
+button{padding:14px 40px;font-size:16px;background:#25D366;color:#111;border:none;border-radius:8px;cursor:pointer;font-weight:bold}
+p{color:#888;font-size:13px;line-height:1.5}
+h2{margin-bottom:0}
+.help{background:#1a1a2e;padding:12px;border-radius:8px;margin-top:15px;font-size:12px;color:#666}
+</style></head>
+<body><div class="wrap">
+<h2>🔗 Vincular WhatsApp</h2>
+<p style="margin-top:5px">Ingresa tu número y recibe un código en tu teléfono</p>
+<form method="POST" action="/pair">
+<input type="tel" name="phone" placeholder="521234567890" required>
+<button type="submit">Obtener código</button>
+</form>
+<p>Incluye código de país (ej: 52 México, 34 España, 1 USA). Sin +, sin espacios, sin guiones.</p>
+<div class="help">Alternativa: <a href="/qr" style="color:#25D366">escanear QR</a></div>
+</div></body></html>`);
+});
+
+app.post('/pair', async (req, res) => {
+    if (clientReady) return res.send('Ya conectado');
+    const phone = req.body.phone?.replace(/[^0-9]/g, '');
+    if (!phone || phone.length < 7) return res.status(400).send('Número inválido');
+    if (!currentClient) return res.status(500).send('Cliente no disponible');
+
+    try {
+        console.log('[pair] Solicitando código para:', phone);
+        const code = await currentClient.requestPairingCode(phone);
+        console.log('[pair] Código obtenido:', code);
+        res.type('html');
+        res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Código de vinculación</title>
+<style>
+body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}
+.wrap{text-align:center}
+code{font-size:36px;background:#1a1a2e;padding:20px 50px;border-radius:12px;display:inline-block;margin:20px 0;color:#25D366;letter-spacing:10px;font-weight:bold;border:2px solid #25D366}
+.instructions{background:#222;padding:20px;border-radius:8px;text-align:left;max-width:400px;margin:15px auto;font-size:14px;color:#ccc;line-height:1.6}
+.instructions b{color:#25D366}
+p{color:#888;font-size:13px}
+</style></head>
+<body><div class="wrap">
+<h2>📱 Código de 8 caracteres</h2>
+<code>${code}</code>
+<div class="instructions">
+1. En tu teléfono abre WhatsApp<br>
+2. Ve a <b>Ajustes → Dispositivos vinculados</b><br>
+3. Toca <b>Vincular un dispositivo</b><br>
+4. Elige <b>Vincular con número de teléfono</b><br>
+5. Ingresa este código de 8 caracteres
+</div>
+<p style="color:#666">La página se actualizará automáticamente cuando se vincule.</p>
+<script>
+async function poll(){
+  try {
+    let r=await fetch('/qr-data');
+    let d=await r.json();
+    if(d.connected) location.href='/pair';
+  }catch(e){}
+}
+setInterval(poll, 3000);
+</script>
+</div></body></html>`);
+    } catch (e) {
+        console.log('[pair] Error:', e.message);
+        res.status(500).send(`Error: ${e.message}. <a href="/pair">Intentar de nuevo</a>`);
+    }
+});
+
 app.get('/qr', async (req, res) => {
     res.type('html');
     const img = displayQr ? await qrcode.toDataURL(displayQr) : null;
@@ -138,6 +215,7 @@ p{color:#888;font-size:13px;margin:8px 0}
 <p id="status">${displayQr ? 'Escanea para conectar' : clientReady ? 'Conectado' : 'Generando QR...'}</p>
 <img id="qri" src="${img || ''}" alt="QR" style="${img ? '' : 'display:none'}"/>
 <p>Abre WhatsApp → Ajustes → Dispositivos vinculados</p>
+<p>¿Problemas con el QR? Usa <a href="/pair" style="color:#25D366">vinculación por número</a></p>
 <script>
 async function poll(){
   try {
