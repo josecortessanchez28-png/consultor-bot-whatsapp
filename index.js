@@ -137,39 +137,46 @@ async function startPairing(phone) {
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
 
-        // 1. Crear cliente SIN pairWithPhoneNumber → arranca con QR
         console.log('[pair] Creando cliente (modo QR)...');
-        currentClient = makeClient(); // sin phone
+        currentClient = makeClient();
         setupEvents(currentClient);
         await currentClient.initialize();
         console.log('[pair] initialize() completado');
 
-        // 2. Esperar a que el QR sea visible → página estable
-        await currentClient.pupPage.waitForSelector('[data-testid="qrcode"]', { timeout: 45000 });
-        console.log('[pair] QR visible — página estable');
+        const page = currentClient.pupPage;
 
-        // 3. Pequeña pausa extra por seguridad
-        await new Promise(r => setTimeout(r, 2000));
+        // Esperar AuthStore (indica que WA cargó)
+        console.log('[pair] Esperando AuthStore...');
+        await page.waitForFunction(() => window.AuthStore !== undefined, { timeout: 60000 });
+        console.log('[pair] AuthStore disponible');
 
-        // 4. Cambiar a modo pairing vía evaluate directo (sin requestPairingCode)
+        // Diagnóstico: evaluate simple
+        try {
+            const test = await page.evaluate(() => 'ok');
+            console.log('[pair] evaluate test:', test);
+        } catch (e) {
+            console.log('[pair] evaluate test falló:', e?.message?.slice(0, 100) || e);
+        }
+
+        // Cambiar a modo pairing
         console.log('[pair] Cambiando a modo pairing...');
         for (let i = 0; i < 3 && !pendingPairingCode; i++) {
             try {
                 const code = await Promise.race([
-                    currentClient.pupPage.evaluate(async (phoneNumber) => {
+                    page.evaluate(async (phoneNumber) => {
                         let u = window.AuthStore?.PairingCodeLinkUtils;
                         let waited = 0;
                         while (!u) {
                             await new Promise(r => setTimeout(r, 200));
                             waited += 200;
-                            if (waited > 20000) throw new Error('timeout PairingCodeLinkUtils');
+                            if (waited > 30000) throw new Error('timeout PairingCodeLinkUtils');
                             u = window.AuthStore?.PairingCodeLinkUtils;
                         }
                         u.setPairingType('ALT_DEVICE_LINKING');
                         await u.initializeAltDeviceLinking();
                         return await u.startAltLinkingFlow(phoneNumber, true);
                     }, phone),
-                    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout evaluate')), 60000)),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout 60s')), 60000)),
                 ]);
                 if (code && /^[A-Z0-9]{8}$/.test(code)) {
                     console.log('[pair] Código:', code);
@@ -178,6 +185,7 @@ async function startPairing(phone) {
                 }
             } catch (e2) {
                 console.log(`[pair] Intento ${i + 1} falló:`, e2?.message?.slice(0, 120) || e2);
+                console.log('[pair] Stack:', e2?.stack?.slice(0, 200));
                 await new Promise(r => setTimeout(r, 5000));
             }
         }
