@@ -61,7 +61,7 @@ function makeClient(phoneNumber) {
                 '--disable-extensions',
                 '--disable-component-extensions-with-background-pages',
                 '--disable-background-networking',
-                '--js-flags=--max-old-space-size=256',
+                '--js-flags=--max-old-space-size=384',
             ],
         },
     };
