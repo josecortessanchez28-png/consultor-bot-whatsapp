@@ -41,6 +41,7 @@ const store = new SupabaseStore();
 let clientReady = false;
 let everConnected = false;
 let pairingInProgress = false;
+let clientStarting = false;
 let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
@@ -111,13 +112,16 @@ async function cleanupChromeLocks() {
 }
 
 async function startClient() {
+    if (clientStarting || pairingInProgress) return;
     const exists = await store.sessionExists(SESSION_KEY);
     if (exists) {
         console.log('[index] Restaurando sesión...');
+        clientStarting = true;
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
         await cleanupChromeLocks();
         if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
         await connectClient();
+        clientStarting = false;
     } else {
         console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
     }
@@ -135,7 +139,7 @@ async function connectClient() {
             return;
         } catch (e) {
             console.log(`[index] connectClient intento ${i + 1}/3 falló:`, e?.message?.slice(0, 100) || e);
-            await new Promise(r => setTimeout(r, 5000));
+            await new Promise(r => setTimeout(r, 8000));
         }
     }
     console.log('[index] No se pudo conectar tras 3 intentos');
@@ -154,6 +158,13 @@ async function startPairing(phone) {
     try {
         pendingPairingCode = null;
         pendingPairingError = null;
+
+        // Esperar si hay un cliente iniciándose
+        while (clientStarting) {
+            console.log('[pair] Esperando a que termine connectClient...');
+            await new Promise(r => setTimeout(r, 3000));
+        }
+        pairingInProgress = true;
 
         if (currentClient) {
             try { await currentClient.destroy(); } catch (_) {}
@@ -235,6 +246,7 @@ app.get('/', (req, res) => {
 
 app.get('/pair', (req, res) => {
     if (clientReady) return res.send('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conectado</title><style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;text-align:center}</style></head><body><h2>Conectado</h2><p>El bot ya está vinculado a WhatsApp.</p></body></html>');
+    if (clientStarting) return res.send('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Espera</title><style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;text-align:center}</style></head><body><h2>Iniciando sesión...</h2><p>Espera unos segundos y recarga.</p></body></html>');
     res.type('html');
     res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Vincular consultor</title>
@@ -261,6 +273,7 @@ h2{margin-bottom:0}
 
 app.post('/pair', async (req, res) => {
     if (clientReady) return res.send('Ya conectado');
+    if (clientStarting) return res.status(400).send('Cliente iniciándose, espera unos segundos');
     const phone = req.body.phone?.replace(/[^0-9]/g, '');
     if (!phone || phone.length < 7) return res.status(400).send('Número inválido');
 
