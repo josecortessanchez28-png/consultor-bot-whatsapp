@@ -6,6 +6,7 @@ const { Client, LocalAuth } = require('whatsapp-web.js');
 const SupabaseStore = require('./supabase-store');
 const https = require('https');
 const bot = require('./bot');
+const database = require('./database');
 
 function findChrome() {
     const paths = [
@@ -60,7 +61,7 @@ function makeClient(phoneNumber) {
                 '--disable-extensions',
                 '--disable-component-extensions-with-background-pages',
                 '--disable-background-networking',
-                '--max_old_space_size=256',
+                '--js-flags=--max-old-space-size=256',
             ],
         },
     };
@@ -75,7 +76,6 @@ function setupEvents(client) {
     client.on('message_create', (msg) => {
         if (msg.from === 'status@broadcast') return;
         if (msg.from.endsWith('@g.us')) return;
-        if (msg.author && msg.author !== msg.from) return;
         if (msg.fromMe) return;
         console.log('Msg de', msg.from, 'tipo:', msg.type || msg._data?.type);
         bot.handleMessage(client, msg);
@@ -413,6 +413,36 @@ process.on('unhandledRejection', (err) => {
     console.log('[unhandledRejection]', err?.stack || err?.message || err);
 });
 
+async function waitForActiveInstance() {
+    console.log('[index] Comprobando si otra instancia está activa...');
+    while (true) {
+        const active = await database.getActiveInstance();
+        if (!active) {
+            console.log('[index] No hay otra instancia activa. Tomando control.');
+            break;
+        }
+        
+        const age = Date.now() - active.timestamp;
+        if (age > 15000) {
+            console.log(`[index] La otra instancia parece haber muerto (inactiva por ${(age / 1000).toFixed(1)}s). Tomando control.`);
+            break;
+        }
+        
+        if (active.instanceId === database.INSTANCE_ID) {
+            break;
+        }
+        
+        console.log(`[index] Otra instancia (${active.instanceId}) está activa. Esperando...`);
+        await new Promise(r => setTimeout(r, 2000));
+    }
+    
+    // Iniciar latidos cada 5s
+    setInterval(async () => {
+        await database.updateHeartbeat();
+    }, 5000);
+    await database.updateHeartbeat();
+}
+
 process.on('SIGTERM', async () => {
     console.log('SIGTERM - cerrando cliente y respaldando...');
     if (currentClient) {
@@ -437,11 +467,24 @@ process.on('SIGTERM', async () => {
             console.log('[SIGTERM] Backup falló:', e.message);
         }
     }
+    
+    // Liberar latido
+    try {
+        await database.releaseHeartbeat();
+        console.log('[SIGTERM] Latido liberado');
+    } catch (_) {}
+    
     process.exit(0);
 });
 
+async function startApp() {
+    console.log('[index] Iniciando instancia:', database.INSTANCE_ID);
+    await waitForActiveInstance();
+    await startClient();
+}
+
 const server = app.listen(PORT, () => {
     console.log('Servidor en puerto', PORT);
-    startClient();
+    startApp();
     startKeepAlive();
 });

@@ -14,13 +14,14 @@ const EXCLUDES = [
 
 async function _packDir(srcDir, dstFile) {
     const dirName = path.basename(srcDir);
-    const parentDir = path.dirname(srcDir);
+    const parentDir = path.dirname(srcDir).replace(/\\/g, '/');
+    const formattedDstFile = dstFile.replace(/\\/g, '/');
     console.log('[Store] empaquetando con tar...');
     // tar sale con código 1 si un archivo cambia durante la lectura.
     // LevelDB tolera lecturas concurrentes (crash recovery built-in).
     // Gzip (-z) reduce ~25 MB a ~5 MB.
     try {
-        await execFileP('tar', ['-czf', dstFile, ...EXCLUDES, '-C', parentDir, dirName], { timeout: 120000 });
+        await execFileP('tar', ['-czf', formattedDstFile, ...EXCLUDES, '-C', parentDir, dirName], { timeout: 120000 });
     } catch (e) {
         if (fs.existsSync(dstFile) && fs.statSync(dstFile).size > 0) {
             console.log('[Store] tar creado (con avisos:', e.message.split('\n')[0].slice(0, 80) + ')');
@@ -32,9 +33,10 @@ async function _packDir(srcDir, dstFile) {
 }
 
 async function _unpackDir(srcFile, dstDir) {
-    // Detectar si es gzip por extensión: .tar.gz → -xzf, .tar → -xf
+    const formattedSrcFile = srcFile.replace(/\\/g, '/');
+    const formattedDstDir = dstDir.replace(/\\/g, '/');
     const gz = srcFile.endsWith('.tar.gz');
-    await execFileP('tar', gz ? ['-xzf', srcFile, '-C', dstDir] : ['-xf', srcFile, '-C', dstDir], { timeout: 120000 });
+    await execFileP('tar', gz ? ['-xzf', formattedSrcFile, '-C', formattedDstDir] : ['-xf', formattedSrcFile, '-C', formattedDstDir], { timeout: 120000 });
 }
 
 class SupabaseStore {
