@@ -43,7 +43,7 @@ let everConnected = false;
 let pairingInProgress = false;
 let currentClient = null;
 
-function makeClient() {
+function makeClient(phoneNumber) {
     const opts = {
         authStrategy: new LocalAuth({ clientId: SESSION_KEY, dataPath: AUTH_DIR }),
         puppeteer: {
@@ -55,11 +55,14 @@ function makeClient() {
             ],
         },
     };
+    if (phoneNumber) {
+        opts.pairWithPhoneNumber = { phoneNumber };
+    }
     if (chromePath) opts.puppeteer.executablePath = chromePath;
     return new Client(opts);
 }
 
-function setupClient(client) {
+function setupEvents(client) {
     client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
@@ -87,8 +90,6 @@ function setupClient(client) {
         console.log('Msg de', msg.from, 'tipo:', msg.type || msg._data?.type);
         bot.handleMessage(client, msg);
     });
-
-    client.initialize();
 }
 
 async function startClient() {
@@ -102,7 +103,8 @@ async function startClient() {
 
     if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
     currentClient = makeClient();
-    setupClient(currentClient);
+    setupEvents(currentClient);
+    currentClient.initialize();
 }
 
 function startKeepAlive() {
@@ -147,14 +149,38 @@ app.post('/pair', async (req, res) => {
     if (clientReady) return res.send('Ya conectado');
     const phone = req.body.phone?.replace(/[^0-9]/g, '');
     if (!phone || phone.length < 7) return res.status(400).send('Número inválido');
-    if (!currentClient) return res.status(500).send('Cliente no disponible');
 
     pairingInProgress = true;
 
     try {
-        console.log('[pair] Solicitando código para:', phone);
-        const code = await currentClient.requestPairingCode(phone);
+        if (currentClient) {
+            try { await currentClient.destroy(); } catch (_) {}
+            currentClient = null;
+        }
+        clientReady = false;
+
+        // Clear old session to force fresh pairing
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+
+        console.log('[pair] Creando cliente con pairWithPhoneNumber para:', phone);
+        currentClient = makeClient(phone);
+
+        // Capture the pairing code from whatApp-web.js 'code' event
+        const codePromise = new Promise((resolve, reject) => {
+            const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado (60s)')), 60000);
+            currentClient.on('code', (code) => {
+                clearTimeout(timeout);
+                resolve(code);
+            });
+        });
+
+        setupEvents(currentClient);
+        currentClient.initialize().catch(e => console.log('[pair] init error:', e.message));
+
+        const code = await codePromise;
         console.log('[pair] Código obtenido:', code);
+
         res.type('html');
         res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Código de vinculación</title>
