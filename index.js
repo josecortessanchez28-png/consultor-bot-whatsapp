@@ -41,6 +41,7 @@ let clientReady = false;
 let everConnected = false;
 let pairingInProgress = false;
 let clientStarting = false;
+let sessionRestored = false;
 let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
@@ -81,9 +82,10 @@ function setupEvents(client) {
     });
 
     client.on('qr', async (qr) => {
-        if (!pairingInProgress) {
-            console.log('[qr] QR inesperado — sesión inválida o expirada. Limpiando...');
+        if (!pairingInProgress && sessionRestored) {
+            console.log('[qr] QR inesperado — sesión restaurada inválida. Limpiando...');
             clientReady = false;
+            sessionRestored = false;
             const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
             try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
             try { await store.deleteSession(SESSION_KEY); } catch (_) {}
@@ -98,9 +100,12 @@ function setupEvents(client) {
         console.log('[auth_failure] Fallo de autenticación:', reason);
         clientReady = false;
         pairingInProgress = false;
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-        try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+        if (sessionRestored) {
+            sessionRestored = false;
+            const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+            try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+            try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+        }
         if (currentClient) {
             try { await currentClient.destroy(); } catch (_) {}
             currentClient = null;
@@ -110,6 +115,7 @@ function setupEvents(client) {
     client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
+        sessionRestored = false;
         console.log('WhatsApp conectado correctamente');
 
         await new Promise(r => setTimeout(r, 1000));
@@ -167,8 +173,10 @@ async function startClient() {
     if (exists) {
         console.log('[index] Restaurando sesión...');
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
+        sessionRestored = true;
         await cleanupChromeLocks();
     } else {
+        sessionRestored = false;
         console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
     }
 
@@ -220,6 +228,7 @@ async function startPairing(phone) {
             await new Promise(r => setTimeout(r, 3000));
         }
         pairingInProgress = true;
+        sessionRestored = false;
 
         // Eliminar backup previo de Storage
         try {
