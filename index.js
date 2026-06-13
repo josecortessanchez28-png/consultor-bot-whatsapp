@@ -56,6 +56,8 @@ function makeClient(phoneNumber) {
             headless: true,
             protocolTimeout: 120000,
             args: [
+                '--single-process',
+                '--js-flags=--max-old-space-size=350',
                 '--no-sandbox', '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage', '--no-zygote',
                 '--disable-gpu',
