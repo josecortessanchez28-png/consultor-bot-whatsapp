@@ -130,18 +130,7 @@ function setupEvents(client) {
 
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
 
-        // Backup inmediato (tokens ya están en IndexedDB, LevelDB tolera cortes)
-        (async () => {
-            try {
-                console.log('[backup] Guardando copia inmediata...');
-                await store.saveSession(SESSION_KEY, sessionDir);
-                console.log('[backup] Copia inmediata guardada');
-            } catch (e) {
-                console.log('[backup] Error en backup inmediato:', e.message);
-            }
-        })();
-
-        // Backup a los 60s (tras estabilización completa de IndexedDB)
+        // Backup a los 60s (Chrome ya estabilizado, menos presión de memoria)
         setTimeout(async () => {
             try {
                 console.log('[backup] Guardando copia estable (60s)...');
