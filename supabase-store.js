@@ -12,7 +12,7 @@ async function _packDir(srcDir, dstFile) {
     const dirName = path.basename(srcDir);
     const parentDir = path.dirname(srcDir);
     console.log('[Store] empaquetando con tar...');
-    await execFileP('tar', ['-cf', dstFile, '-C', parentDir, dirName], { timeout: 120000 });
+    await execFileP('tar', ['-cf', dstFile, '--exclude=Cache', '-C', parentDir, dirName], { timeout: 120000 });
     console.log('[Store] tar creado');
 }
 
