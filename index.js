@@ -84,12 +84,12 @@ function setupEvents(client) {
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
 
-        // Esperar 30s para que IndexedDB termine de escribir
-        await new Promise(r => setTimeout(r, 30000));
+        // Esperar 5s para que IndexedDB termine de escribir
+        await new Promise(r => setTimeout(r, 5000));
 
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try {
-            console.log('[backup] Backup 30s...');
+            console.log('[backup] Backup 5s...');
             await store.saveSession(SESSION_KEY, sessionDir);
         } catch (e) {
             console.log('[backup] Error:', e.message);
@@ -178,6 +178,12 @@ async function startPairing(phone) {
             await new Promise(r => setTimeout(r, 3000));
         }
         pairingInProgress = true;
+
+        // Eliminar backup corrupto de Storage para que el nuevo sea limpio
+        try {
+            await store.db.storage.from('session-bucket').remove([`${SESSION_KEY}.tar`]);
+            console.log('[pair] Backup anterior eliminado de Storage');
+        } catch (_) {}
 
         if (currentClient) {
             try { await currentClient.destroy(); } catch (_) {}
