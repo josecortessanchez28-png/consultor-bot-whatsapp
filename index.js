@@ -68,11 +68,16 @@ function setupEvents(client) {
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        setTimeout(async () => {
-            console.log('[index] Iniciando backup en background...');
+        sessionSaveInProgress = true;
+        try {
+            console.log('[index] Guardando sesión inmediatamente...');
             await store.saveSession(SESSION_KEY, sessionDir);
-            console.log('[index] Backup completado');
-        }, 5000);
+            console.log('[index] Backup inicial completado');
+        } catch (e) {
+            console.log('[index] Error en backup inicial:', e.message);
+        } finally {
+            sessionSaveInProgress = false;
+        }
         setInterval(() => store.saveSession(SESSION_KEY, sessionDir), 300000);
     });
 
@@ -232,15 +237,26 @@ app.get('/qr-data', (req, res) => {
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
 
 // Guardar sesión antes de que Render mate el proceso
-process.on('SIGTERM', () => {
+let sessionSaveInProgress = false;
+
+process.on('SIGTERM', async () => {
     console.log('SIGTERM — guardando sesión...');
     const forceExit = setTimeout(() => process.exit(0), 25000);
     if (everConnected) {
         const dir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        store.saveSession(SESSION_KEY, dir).finally(() => {
-            clearTimeout(forceExit);
-            process.exit(0);
-        });
+        if (sessionSaveInProgress) {
+            console.log('SIGTERM — backup ya en progreso, esperando...');
+            return; // forceExit se encargará si tarda demasiado
+        }
+        sessionSaveInProgress = true;
+        try {
+            await store.saveSession(SESSION_KEY, dir);
+            console.log('SIGTERM — backup completado');
+        } catch (e) {
+            console.log('SIGTERM — error backup:', e.message);
+        }
+        clearTimeout(forceExit);
+        process.exit(0);
     } else {
         clearTimeout(forceExit);
         process.exit(0);
