@@ -64,6 +64,10 @@ class SupabaseStore {
             await this._ensureBucket();
             const { error } = await this.db.storage.from(BUCKET).upload(`${key}.tar.gz`, buffer, { upsert: true });
             if (error) return console.log('[Store] Storage upload error:', error.message);
+
+            // Eliminar formato antiguo .tar si existe
+            await this.db.storage.from(BUCKET).remove([`${key}.tar`]).catch(() => {});
+
             console.log('[Store] Sesión guardada');
         } catch (e) {
             console.log('[Store] saveSession error:', e.message);
@@ -74,13 +78,27 @@ class SupabaseStore {
 
     async restoreSession(key, destDir) {
         const tmpFile = path.join(destDir, `session-${key}.tar.gz`);
+        const oldFile = path.join(destDir, `session-${key}.tar`);
         try {
             console.log('[Store] restoreSession key:', key, 'destDir:', destDir);
             await this._ensureBucket();
-            const { data, error } = await this.db.storage.from(BUCKET).download(`${key}.tar.gz`);
+
+            // Intentar nuevo formato .tar.gz; si no existe, probar .tar (transición)
+            let { data, error } = await this.db.storage.from(BUCKET).download(`${key}.tar.gz`);
+            let format = 'tar.gz';
+            if (error || !data) {
+                const old = await this.db.storage.from(BUCKET).download(`${key}.tar`);
+                if (!old.error && old.data) {
+                    data = old.data;
+                    error = null;
+                    format = 'tar';
+                }
+            }
+
             if (error || !data) {
                 return console.log('[Store] No hay sesión en Storage') || false;
             }
+
             const buffer = Buffer.from(await data.arrayBuffer());
             console.log('[Store] Descargado:', (buffer.length / 1024).toFixed(1), 'KB');
 
@@ -88,19 +106,34 @@ class SupabaseStore {
             const sessionDir = path.join(destDir, `session-${key}`);
             await fs.promises.mkdir(sessionDir, { recursive: true });
 
-            fs.writeFileSync(tmpFile, buffer);
+            const saveFile = format === 'tar.gz' ? tmpFile : oldFile;
+            fs.writeFileSync(saveFile, buffer);
             if (buffer.length < 2048) {
-                console.log('[Store] tar.gz muy pequeño, podría estar vacío');
+                console.log('[Store] backup muy pequeño, podría estar vacío');
             }
 
-            await _unpackDir(tmpFile, destDir);
+            await _unpackDir(saveFile, destDir);
             console.log('[Store] Sesión restaurada');
+
+            // Si era .tar, convertirlo a .tar.gz para futuros restores
+            if (format === 'tar') {
+                try {
+                    const gzFile = tmpFile;
+                    await _packDir(sessionDir, gzFile);
+                    const gzBuf = fs.readFileSync(gzFile);
+                    await this.db.storage.from(BUCKET).upload(`${key}.tar.gz`, gzBuf, { upsert: true });
+                    await this.db.storage.from(BUCKET).remove([`${key}.tar`]).catch(() => {});
+                    console.log('[Store] Backup convertido a .tar.gz');
+                } catch (_) {}
+            }
+
             return true;
         } catch (e) {
             console.log('[Store] restoreSession error:', e.message);
             return false;
         } finally {
             try { fs.unlinkSync(tmpFile); } catch (_) {}
+            try { fs.unlinkSync(oldFile); } catch (_) {}
         }
     }
 
@@ -108,12 +141,15 @@ class SupabaseStore {
         try {
             await this._ensureBucket();
             const { data, error } = await this.db.storage.from(BUCKET).list('', { search: `${key}.tar.gz` });
-            return !error && !!data?.length;
+            if (!error && data?.length) return true;
+            // También verificar formato antiguo .tar
+            const { data: data2 } = await this.db.storage.from(BUCKET).list('', { search: `${key}.tar` });
+            return !!data2?.length;
         } catch { return false; }
     }
 
     async deleteSession(key) {
-        const { error } = await this.db.storage.from(BUCKET).remove([`${key}.tar.gz`]);
+        const { error } = await this.db.storage.from(BUCKET).remove([`${key}.tar.gz`, `${key}.tar`]);
         if (error) console.log('[Store] deleteSession error:', error.message);
     }
 }
