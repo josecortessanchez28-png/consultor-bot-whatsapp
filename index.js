@@ -2,8 +2,8 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const SupabaseStore = require('./supabase-store');
+const { Client } = require('whatsapp-web.js');
+const SupabaseAuthStrategy = require('./supabase-auth');
 
 const https = require('https');
 const bot = require('./bot');
@@ -36,8 +36,6 @@ const PORT = process.env.PORT || 8080;
 const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 const SESSION_KEY = 'consultor-bot';
 
-const store = new SupabaseStore();
-
 let clientReady = false;
 let everConnected = false;
 let pairingInProgress = false;
@@ -45,10 +43,12 @@ let clientStarting = false;
 let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
+let authStrategy = null;
 
 function makeClient(phoneNumber) {
+    authStrategy = new SupabaseAuthStrategy();
     const opts = {
-        authStrategy: new LocalAuth({ clientId: SESSION_KEY, dataPath: AUTH_DIR }),
+        authStrategy,
         puppeteer: {
             headless: true,
             args: [
@@ -75,18 +75,6 @@ function setupEvents(client) {
         clientReady = true;
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        sessionSaveInProgress = true;
-        try {
-            console.log('[index] Guardando sesión inmediatamente...');
-            await store.saveSession(SESSION_KEY, sessionDir);
-            console.log('[index] Backup inicial completado');
-        } catch (e) {
-            console.log('[index] Error en backup inicial:', e.message);
-        } finally {
-            sessionSaveInProgress = false;
-        }
-        setInterval(() => store.saveSession(SESSION_KEY, sessionDir), 300000);
     });
 
     client.on('disconnected', (reason) => {
@@ -108,47 +96,19 @@ function setupEvents(client) {
 
 async function cleanupChromeLocks() {
     const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-    // Limpiar archivos lock de Chrome
-    const toRemove = [
-        'SingletonLock', 'SingletonSocket', 'SingletonCookie',
-        'SingletonConnect', 'SingletonListen',
-    ];
+    const toRemove = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
     for (const f of toRemove) {
         try { fs.unlinkSync(path.join(sessionDir, f)); } catch (_) {}
     }
-    // Limpiar cachés y datos temporales que puedan estar corruptos
-    const rmDirs = [
-        path.join(sessionDir, 'Default', 'Cache'),
-        path.join(sessionDir, 'Default', 'Code Cache'),
-        path.join(sessionDir, 'Default', 'GPUCache'),
-        path.join(sessionDir, 'Default', 'Service Worker', 'Cache Storage'),
-        path.join(sessionDir, 'ShaderCache'),
-        path.join(sessionDir, 'Crashpad'),
-        path.join(sessionDir, 'Crash Reports'),
-    ];
-    for (const d of rmDirs) {
-        try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
-    }
-    // Matar zombies de Chrome (solo en Linux/Render)
-    try {
-        require('child_process').execFileSync('pkill', ['-f', 'chrome'], { timeout: 3000 });
-    } catch (_) {}
+    try { fs.rmSync(path.join(sessionDir, 'Default', 'Cache'), { recursive: true, force: true }); } catch (_) {}
+    try { require('child_process').execFileSync('pkill', ['-f', 'chrome'], { timeout: 3000 }); } catch (_) {}
 }
 
 async function startClient() {
     if (clientStarting || pairingInProgress) return;
-    const exists = await store.sessionExists(SESSION_KEY);
-    if (exists) {
-        console.log('[index] Restaurando sesión...');
-        clientStarting = true;
-        await store.restoreSession(SESSION_KEY, AUTH_DIR);
-        await cleanupChromeLocks();
-        if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
-        await connectClient();
-        clientStarting = false;
-    } else {
-        console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
-    }
+    clientStarting = true;
+    await connectClient();
+    clientStarting = false;
 }
 
 async function connectClient() {
@@ -168,15 +128,7 @@ async function connectClient() {
             await new Promise(r => setTimeout(r, delay));
         }
     }
-    // Si llegamos aquí, todo falló — limpiar sesión corrupta
-    console.log('[index] 10 intentos fallidos, limpiando sesión corrupta...');
-    const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-    try {
-        // Eliminar también de Storage para que no se restaure la misma sesión corrupta
-        await store.db.storage.from('session-bucket').remove([`${SESSION_KEY}.tar`]);
-        console.log('[index] Backup corrupto eliminado de Storage');
-    } catch (_) {}
+    console.log('[index] 10 intentos fallidos');
 }
 
 function startKeepAlive() {
@@ -206,11 +158,7 @@ async function startPairing(phone) {
         }
         clientReady = false;
 
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-        await cleanupChromeLocks();
-
-        console.log('[pair] Creando cliente (modo QR)...');
+        console.log('[pair] Creando cliente...');
         currentClient = makeClient();
         setupEvents(currentClient);
         await currentClient.initialize();
@@ -392,30 +340,13 @@ process.on('unhandledRejection', (err) => {
     console.log('[unhandledRejection]', err?.stack || err?.message || err);
 });
 
-let sessionSaveInProgress = false;
-
 process.on('SIGTERM', async () => {
     console.log('SIGTERM — guardando sesión...');
-    const forceExit = setTimeout(() => process.exit(0), 25000);
-    if (everConnected) {
-        const dir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        if (sessionSaveInProgress) {
-            console.log('SIGTERM — backup ya en progreso, esperando...');
-            return;
-        }
-        sessionSaveInProgress = true;
-        try {
-            await store.saveSession(SESSION_KEY, dir);
-            console.log('SIGTERM — backup completado');
-        } catch (e) {
-            console.log('SIGTERM — error backup:', e.message);
-        }
-        clearTimeout(forceExit);
-        process.exit(0);
-    } else {
-        clearTimeout(forceExit);
-        process.exit(0);
+    if (authStrategy && clientReady) {
+        await authStrategy.saveTokens();
+        console.log('SIGTERM — tokens guardados');
     }
+    process.exit(0);
 });
 
 app.listen(PORT, () => {
