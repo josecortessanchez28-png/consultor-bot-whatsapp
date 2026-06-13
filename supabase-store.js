@@ -33,12 +33,13 @@ async function _packDir(srcDir, dstFile) {
             archive.on('error', (e) => reject(e));
             archive.pipe(output);
 
-            // Añadir cada archivo manualmente
+            // Añadir cada archivo manualmente, preservando la estructura
+            const rootName = path.basename(srcDir);
             function add(dir, prefix) {
                 const entries = fs.readdirSync(dir, { withFileTypes: true });
                 for (const e of entries) {
                     const full = path.join(dir, e.name);
-                    const name = prefix ? path.join(prefix, e.name) : e.name;
+                    const name = prefix ? path.join(prefix, e.name) : path.join(rootName, e.name);
                     if (e.isDirectory()) {
                         archive.append('', { name: name + '/', type: 'directory' });
                         add(full, name);
