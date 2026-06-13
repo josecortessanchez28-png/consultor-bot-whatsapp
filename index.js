@@ -463,42 +463,55 @@ async function waitForActiveInstance() {
     }
     
     // Iniciar latidos cada 5s
-    setInterval(async () => {
+    heartbeatInterval = setInterval(async () => {
         await database.updateHeartbeat();
     }, 5000);
     await database.updateHeartbeat();
 }
 
+let heartbeatInterval;
+
 process.on('SIGTERM', async () => {
     console.log('SIGTERM - cerrando cliente y respaldando...');
-    if (currentClient) {
-        // Cerrar Chrome limpiamente primero (flush de IndexedDB a disco)
-        try {
-            await Promise.race([
-                currentClient.destroy(),
-                new Promise((_, rej) => setTimeout(() => rej(new Error('destroy timeout')), 10000)),
-            ]);
-        } catch (e) {
-            console.log('[SIGTERM] destroy:', e.message);
-        }
-        currentClient = null;
-        clientReady = false;
 
-        // Backup después de Chrome cerrado — archivos estables
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try {
-            await store.saveSession(SESSION_KEY, sessionDir);
-            console.log('[SIGTERM] Backup completado');
-        } catch (e) {
-            console.log('[SIGTERM] Backup falló:', e.message);
+    // Parar heartbeat inmediatamente para que otra instancia tome control
+    if (heartbeatInterval) clearInterval(heartbeatInterval);
+    heartbeatInterval = null;
+
+    // Timeout total de SIGTERM (Render da ~30s, nos reservamos 15s)
+    const sigtermPromise = (async () => {
+        if (currentClient) {
+            try {
+                await Promise.race([
+                    currentClient.destroy(),
+                    new Promise((_, rej) => setTimeout(() => rej(new Error('destroy timeout')), 10000)),
+                ]);
+            } catch (e) {
+                console.log('[SIGTERM] destroy:', e.message);
+            }
+            currentClient = null;
+            clientReady = false;
+
+            const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+            try {
+                await store.saveSession(SESSION_KEY, sessionDir);
+                console.log('[SIGTERM] Backup completado');
+            } catch (e) {
+                console.log('[SIGTERM] Backup falló:', e.message);
+            }
         }
-    }
-    
-    // Liberar latido
-    try {
-        await database.releaseHeartbeat();
-        console.log('[SIGTERM] Latido liberado');
-    } catch (_) {}
+        
+        try {
+            await database.releaseHeartbeat();
+            console.log('[SIGTERM] Latido liberado');
+        } catch (_) {}
+    })();
+
+    // Si pasa de 15s, salir igual (Render hará SIGKILL)
+    await Promise.race([
+        sigtermPromise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('SIGTERM timeout 15s')), 15000)),
+    ]).catch(e => console.log('[SIGTERM]', e.message));
     
     process.exit(0);
 });
