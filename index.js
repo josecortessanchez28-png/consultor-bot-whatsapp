@@ -84,6 +84,7 @@ function setupEvents(client) {
     client.on('disconnected', (reason) => {
         clientReady = false;
         pairingInProgress = false;
+        currentClient = null;
         console.log('Desconectado:', reason);
     });
 
@@ -102,14 +103,14 @@ async function startClient() {
     if (exists) {
         console.log('[index] Restaurando sesión...');
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
+        if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
+        currentClient = makeClient();
+        setupEvents(currentClient);
+        currentClient.initialize();
     } else {
         console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
+        // No crear cliente hasta que el usuario visite /pair
     }
-
-    if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
-    currentClient = makeClient();
-    setupEvents(currentClient);
-    currentClient.initialize();
 }
 
 function startKeepAlive() {
@@ -125,7 +126,6 @@ app.get('/', (req, res) => {
 
 app.get('/pair', (req, res) => {
     if (clientReady) return res.send('<!DOCTYPE html><html><head><meta charset="utf-8"><title>Conectado</title><style>body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;text-align:center}</style></head><body><h2>Conectado</h2><p>El bot ya está vinculado a WhatsApp.</p></body></html>');
-    if (!currentClient) return res.status(500).send('Cliente no disponible');
     res.type('html');
     res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Vincular consultor</title>
