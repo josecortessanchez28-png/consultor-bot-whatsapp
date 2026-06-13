@@ -3,34 +3,18 @@ const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { execFileSync } = require('child_process');
 
 const BUCKET = 'session-bucket';
 
-// Copia el directorio de sesión a un temporal para evitar "Size mismatch"
-async function _copyDir(src, dst) {
-    await fs.promises.mkdir(dst, { recursive: true });
-    const entries = await fs.promises.readdir(src, { withFileTypes: true });
-    for (const entry of entries) {
-        const s = path.join(src, entry.name);
-        const d = path.join(dst, entry.name);
-        if (entry.isDirectory()) {
-            await _copyDir(s, d);
-        } else if (entry.isFile()) {
-            try {
-                // leer y escribir en chunks para evitar archivos bloqueados
-                const content = await fs.promises.readFile(s);
-                await fs.promises.writeFile(d, content);
-            } catch (_) {
-                // ignorar archivos que no se puedan leer (ej: bloqueados por otro proceso)
-            }
-        }
-    }
-}
-
 async function _packDir(srcDir, dstFile) {
-    const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-'));
+    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-'));
+    const tmpDir = path.join(tmpRoot, path.basename(srcDir));
     try {
-        await _copyDir(srcDir, path.join(tmpDir, path.basename(srcDir)));
+        // Usar cp -a del sistema (maneja sockets, FIFOs, archivos bloqueados)
+        execFileSync('cp', ['-a', srcDir, tmpRoot], { timeout: 30000 });
+        const entries = fs.readdirSync(tmpDir);
+        console.log('[Store] archivos en sesión:', entries.length);
         return new Promise((resolve, reject) => {
             const output = fs.createWriteStream(dstFile);
             const archive = archiver('tar', { gzip: false });
@@ -41,7 +25,7 @@ async function _packDir(srcDir, dstFile) {
             archive.finalize();
         });
     } finally {
-        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+        try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (_) {}
     }
 }
 
@@ -93,14 +77,25 @@ class SupabaseStore {
     async restoreSession(key, destDir) {
         const tmpFile = path.join(destDir, `session-${key}.tar`);
         try {
+            console.log('[Store] restoreSession key:', key, 'destDir:', destDir);
             await this._ensureBucket();
             const { data, error } = await this.db.storage.from(BUCKET).download(`${key}.tar`);
             if (error || !data) {
                 return console.log('[Store] No hay sesión en Storage') || false;
             }
             const buffer = Buffer.from(await data.arrayBuffer());
-            fs.writeFileSync(tmpFile, buffer);
             console.log('[Store] Descargado:', (buffer.length / 1024).toFixed(1), 'KB');
+
+            // Asegurar que destDir existe
+            await fs.promises.mkdir(destDir, { recursive: true });
+            // Asegurar que el directorio de sesión existe
+            const sessionDir = path.join(destDir, `session-${key}`);
+            await fs.promises.mkdir(sessionDir, { recursive: true });
+
+            fs.writeFileSync(tmpFile, buffer);
+            if (buffer.length < 2048) {
+                console.log('[Store] tar muy pequeño, podría estar vacío');
+            }
 
             await _unpackDir(tmpFile, destDir);
             console.log('[Store] Sesión restaurada');
