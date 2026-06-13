@@ -2,9 +2,8 @@ require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
-const { Client } = require('whatsapp-web.js');
-const SupabaseAuthStrategy = require('./supabase-auth');
-
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const SupabaseStore = require('./supabase-store');
 const https = require('https');
 const bot = require('./bot');
 
@@ -36,6 +35,8 @@ const PORT = process.env.PORT || 8080;
 const AUTH_DIR = path.join(__dirname, '.wwebjs_auth');
 const SESSION_KEY = 'consultor-bot';
 
+const store = new SupabaseStore();
+
 let clientReady = false;
 let everConnected = false;
 let pairingInProgress = false;
@@ -43,12 +44,10 @@ let clientStarting = false;
 let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
-let authStrategy = null;
 
 function makeClient(phoneNumber) {
-    authStrategy = new SupabaseAuthStrategy();
     const opts = {
-        authStrategy,
+        authStrategy: new LocalAuth({ clientId: SESSION_KEY, dataPath: AUTH_DIR }),
         puppeteer: {
             headless: true,
             args: [
@@ -71,10 +70,40 @@ function makeClient(phoneNumber) {
 }
 
 function setupEvents(client) {
+    client.on('message_create', (msg) => {
+        if (msg.from === 'status@broadcast') return;
+        if (msg.from.endsWith('@g.us')) return;
+        if (msg.author && msg.author !== msg.from) return;
+        if (msg.fromMe) return;
+        console.log('Msg de', msg.from, 'tipo:', msg.type || msg._data?.type);
+        bot.handleMessage(client, msg);
+    });
+
     client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
+
+        // Esperar 30s para que IndexedDB termine de escribir
+        await new Promise(r => setTimeout(r, 30000));
+
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try {
+            console.log('[backup] Backup 30s...');
+            await store.saveSession(SESSION_KEY, sessionDir);
+        } catch (e) {
+            console.log('[backup] Error:', e.message);
+        }
+
+        // Backup a los 2 min (extra safety)
+        setTimeout(async () => {
+            try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
+        }, 120000);
+
+        // Backup periódico cada 5 min
+        setInterval(async () => {
+            try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
+        }, 300000);
     });
 
     client.on('disconnected', (reason) => {
@@ -83,21 +112,11 @@ function setupEvents(client) {
         currentClient = null;
         console.log('Desconectado:', reason);
     });
-
-    client.on('message', (msg) => {
-        if (msg.from === 'status@broadcast') return;
-        if (msg.from.endsWith('@g.us')) return;
-        if (msg.author && msg.author !== msg.from) return;
-        if (msg.fromMe) return;
-        console.log('Msg de', msg.from, 'tipo:', msg.type || msg._data?.type);
-        bot.handleMessage(client, msg);
-    });
 }
 
 async function cleanupChromeLocks() {
     const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-    const toRemove = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-    for (const f of toRemove) {
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
         try { fs.unlinkSync(path.join(sessionDir, f)); } catch (_) {}
     }
     try { fs.rmSync(path.join(sessionDir, 'Default', 'Cache'), { recursive: true, force: true }); } catch (_) {}
@@ -105,14 +124,25 @@ async function cleanupChromeLocks() {
 }
 
 async function startClient() {
-    if (clientStarting || pairingInProgress) return;
+    while (pairingInProgress) await new Promise(r => setTimeout(r, 1000));
+    if (clientStarting || clientReady) return;
     clientStarting = true;
+
+    const exists = await store.sessionExists(SESSION_KEY);
+    if (exists) {
+        console.log('[index] Restaurando sesión...');
+        await store.restoreSession(SESSION_KEY, AUTH_DIR);
+        await cleanupChromeLocks();
+    } else {
+        console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
+    }
+
     await connectClient();
     clientStarting = false;
 }
 
 async function connectClient() {
-    for (let i = 0; i < 10; i++) {
+    for (let i = 0; i < 3; i++) {
         try {
             await cleanupChromeLocks();
             if (currentClient) { try { await currentClient.destroy(); } catch (_) {} }
@@ -122,13 +152,11 @@ async function connectClient() {
             console.log('[index] Cliente inicializado');
             return;
         } catch (e) {
-            const delay = Math.min(1000 * Math.pow(1.5, i), 30000);
-            console.log(`[index] connectClient intento ${i + 1}/10 falló:`, e?.message?.slice(0, 100) || e);
-            console.log(`[index] Reintentando en ${Math.round(delay / 1000)}s...`);
-            await new Promise(r => setTimeout(r, delay));
+            console.log(`[index] Intento ${i + 1}/3 falló:`, e?.message?.slice(0, 100) || e);
+            await new Promise(r => setTimeout(r, 8000));
         }
     }
-    console.log('[index] 10 intentos fallidos');
+    console.log('[index] No se pudo conectar tras 3 intentos');
 }
 
 function startKeepAlive() {
@@ -138,16 +166,15 @@ function startKeepAlive() {
     ping(); setTimeout(ping, 120000); setInterval(ping, 240000);
 }
 
-// ----- Pairing code generation directa via Puppeteer -----
+// ----- Pairing code generation -----
 
 async function startPairing(phone) {
     try {
         pendingPairingCode = null;
         pendingPairingError = null;
 
-        // Esperar si hay un cliente iniciándose
         while (clientStarting) {
-            console.log('[pair] Esperando a que termine connectClient...');
+            console.log('[pair] Esperando connectClient...');
             await new Promise(r => setTimeout(r, 3000));
         }
         pairingInProgress = true;
@@ -165,21 +192,10 @@ async function startPairing(phone) {
         console.log('[pair] initialize() completado');
 
         const page = currentClient.pupPage;
-
-        // Esperar AuthStore (indica que WA cargó)
         console.log('[pair] Esperando AuthStore...');
         await page.waitForFunction(() => window.AuthStore !== undefined, { timeout: 60000 });
         console.log('[pair] AuthStore disponible');
 
-        // Diagnóstico: evaluate simple
-        try {
-            const test = await page.evaluate(() => 'ok');
-            console.log('[pair] evaluate test:', test);
-        } catch (e) {
-            console.log('[pair] evaluate test falló:', e?.message?.slice(0, 100) || e);
-        }
-
-        // Cambiar a modo pairing
         console.log('[pair] Cambiando a modo pairing...');
         for (let i = 0; i < 3 && !pendingPairingCode; i++) {
             try {
@@ -206,7 +222,6 @@ async function startPairing(phone) {
                 }
             } catch (e2) {
                 console.log(`[pair] Intento ${i + 1} falló:`, e2?.message?.slice(0, 120) || e2);
-                console.log('[pair] Stack:', e2?.stack?.slice(0, 200));
                 await new Promise(r => setTimeout(r, 5000));
             }
         }
@@ -249,22 +264,17 @@ h2{margin-bottom:0}
 <button type="submit">Obtener código</button>
 </form>
 <p>Incluye código de país (ej: 52 México, 34 España, 1 USA). Sin +, sin espacios, sin guiones.</p>
-
 </div></body></html>`);
 });
 
 app.post('/pair', async (req, res) => {
     if (clientReady) return res.send('Ya conectado');
-    if (clientStarting) return res.status(400).send('Cliente iniciándose, espera unos segundos');
     const phone = req.body.phone?.replace(/[^0-9]/g, '');
     if (!phone || phone.length < 7) return res.status(400).send('Número inválido');
-
+    pairingInProgress = true;
     pendingPairingCode = null;
     pendingPairingError = null;
-    pairingInProgress = true;
-
     startPairing(phone);
-
     res.type('html');
     res.send(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>Generando código...</title>
@@ -317,39 +327,28 @@ check();
 </div></body></html>`);
 });
 
-app.get('/qr', (req, res) => {
-    res.redirect('/pair');
-});
-
-app.get('/qr-data', (req, res) => {
-    res.json({ qr: null, connected: clientReady });
-});
-
+app.get('/qr', (req, res) => res.redirect('/pair'));
+app.get('/qr-data', (req, res) => res.json({ qr: null, connected: clientReady }));
 app.get('/pair-data', (req, res) => {
     if (clientReady) return res.json({ connected: true, code: null, error: null });
     if (pendingPairingError) return res.json({ connected: false, code: null, error: pendingPairingError });
     if (pendingPairingCode) return res.json({ connected: false, code: pendingPairingCode, error: null });
     res.json({ connected: false, code: null, error: null });
 });
-
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
 
-// ----- Manejo de errores y cierre -----
+// ----- Cierre -----
 
 process.on('unhandledRejection', (err) => {
     console.log('[unhandledRejection]', err?.stack || err?.message || err);
 });
 
 process.on('SIGTERM', async () => {
-    console.log('SIGTERM — guardando sesión...');
-    if (authStrategy && clientReady) {
-        await authStrategy.saveTokens();
-        console.log('SIGTERM — tokens guardados');
-    }
+    console.log('SIGTERM');
     process.exit(0);
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     console.log('Servidor en puerto', PORT);
     startClient();
     startKeepAlive();
