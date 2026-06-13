@@ -141,51 +141,23 @@ async function startPairing(phone) {
         currentClient = makeClient(phone);
 
         currentClient.on('code', (code) => {
-            console.log('[pair] Código recibido (evento):', code);
+            console.log('[pair] Código recibido:', code);
             pendingPairingCode = code;
         });
-
-        // Neutralizar requestPairingCode durante initialize() para evitar
-        // que se dispare sin await dentro de inject() y choque con otros exposeFunction
-        const originalRPC = currentClient.requestPairingCode.bind(currentClient);
-        currentClient.requestPairingCode = async () => {
-            console.log('[pair] requestPairingCode interno neutralizado');
-            return '';
-        };
 
         setupEvents(currentClient);
         await currentClient.initialize();
         console.log('[pair] initialize() completado');
 
-        // Restaurar y llamar manualmente después de que la página esté estable
-        currentClient.requestPairingCode = originalRPC;
-
-        if (currentClient.pupPage) {
-            await new Promise(r => setTimeout(r, 3000));
-
-            for (let i = 0; i < 5 && !pendingPairingCode; i++) {
-                console.log(`[pair] Solicitando código (intento ${i + 1}/5)...`);
-                try {
-                    const code = await Promise.race([
-                        currentClient.requestPairingCode(phone),
-                        new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout 30s')), 30000))
-                    ]);
-                    if (code) {
-                        console.log('[pair] Código obtenido:', code);
-                        pendingPairingCode = code;
-                        break;
-                    }
-                } catch (e2) {
-                    console.log(`[pair] Intento ${i + 1} falló:`, e2?.message?.slice(0, 80) || e2);
-                    if (!pendingPairingCode) {
-                        await new Promise(r => setTimeout(r, 3000));
-                    }
-                }
+        // Esperar a que llegue el code event (hasta 120s)
+        if (!pendingPairingCode) {
+            for (let i = 0; i < 120 && !pendingPairingCode; i++) {
+                await new Promise(r => setTimeout(r, 1000));
             }
         }
 
         if (!pendingPairingCode) {
-            pendingPairingError = 'No se pudo generar el código';
+            pendingPairingError = 'No se generó el código. Intenta de nuevo.';
         }
     } catch (e) {
         console.log('[pair] Error:', e?.message || e);
