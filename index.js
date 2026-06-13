@@ -57,7 +57,7 @@ function makeClient(phoneNumber) {
             protocolTimeout: 120000,
             args: [
                 '--single-process',
-                '--js-flags=--max-old-space-size=350',
+                '--js-flags=--max-old-space-size=400',
                 '--no-sandbox', '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage', '--no-zygote',
                 '--disable-gpu',
@@ -128,8 +128,19 @@ function setupEvents(client) {
         if (backupInterval) clearInterval(backupInterval);
         console.log('WhatsApp conectado correctamente');
 
-        // Backup periódico cada 15 min (después de que la BD se estabilice)
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+
+        // Backup inicial a los 60s (IndexedDB ya estable)
+        setTimeout(async () => {
+            try {
+                console.log('[backup] Guardando copia inicial (60s)...');
+                await store.saveSession(SESSION_KEY, sessionDir);
+            } catch (e) {
+                console.log('[backup] Error en backup inicial:', e.message);
+            }
+        }, 60000);
+
+        // Backup periódico cada 15 min
         backupInterval = setInterval(async () => {
             try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
         }, 900000);
@@ -175,25 +186,24 @@ async function startClient() {
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
         sessionRestored = true;
         await cleanupChromeLocks();
+        await connectClient();
+
+        // Si se restauró una sesión pero los 3 intentos fallaron, el backup está corrupto
+        if (sessionRestored && !clientReady) {
+            console.log('[index] Sesión restaurada no válida — limpiando backup corrupto de Storage');
+            sessionRestored = false;
+            const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+            try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+            try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+            if (currentClient) {
+                try { await currentClient.destroy(); } catch (_) {}
+                currentClient = null;
+            }
+            console.log('[index] Backup corrupto eliminado. Ir a /pair para vincular.');
+        }
     } else {
         sessionRestored = false;
         console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
-    }
-
-    await connectClient();
-
-    // Si se restauró una sesión pero los 3 intentos fallaron, el backup está corrupto
-    if (sessionRestored && !clientReady) {
-        console.log('[index] Sesión restaurada no válida — limpiando backup corrupto de Storage');
-        sessionRestored = false;
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-        try { await store.deleteSession(SESSION_KEY); } catch (_) {}
-        if (currentClient) {
-            try { await currentClient.destroy(); } catch (_) {}
-            currentClient = null;
-        }
-        console.log('[index] Backup corrupto eliminado. Ir a /pair para vincular.');
     }
 
     clientStarting = false;
