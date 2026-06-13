@@ -80,12 +80,38 @@ function setupEvents(client) {
         bot.handleMessage(client, msg);
     });
 
+    client.on('qr', async (qr) => {
+        if (!pairingInProgress) {
+            console.log('[qr] QR inesperado — sesión inválida o expirada. Limpiando...');
+            clientReady = false;
+            const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+            try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+            try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+            if (currentClient) {
+                try { await currentClient.destroy(); } catch (_) {}
+                currentClient = null;
+            }
+        }
+    });
+
+    client.on('auth_failure', async (reason) => {
+        console.log('[auth_failure] Fallo de autenticación:', reason);
+        clientReady = false;
+        pairingInProgress = false;
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+        try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+        if (currentClient) {
+            try { await currentClient.destroy(); } catch (_) {}
+            currentClient = null;
+        }
+    });
+
     client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
 
-        // Esperar 1s para que IndexedDB termine de escribir
         await new Promise(r => setTimeout(r, 1000));
 
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
@@ -96,22 +122,22 @@ function setupEvents(client) {
             console.log('[backup] Error:', e.message);
         }
 
-        // Backup a los 2 min (extra safety)
         setTimeout(async () => {
             try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
         }, 120000);
 
-        // Backup periódico cada 5 min
         setInterval(async () => {
             try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
         }, 300000);
     });
 
     client.on('disconnected', (reason) => {
+        console.log('Desconectado:', reason);
         clientReady = false;
         pairingInProgress = false;
-        currentClient = null;
-        console.log('Desconectado:', reason);
+        // NOTA: No borramos la sesión de Storage.
+        // disconnected puede ser temporal (caída de red).
+        // Solo auth_failure indica sesión inválida definitiva.
     });
 }
 
@@ -195,9 +221,9 @@ async function startPairing(phone) {
         }
         pairingInProgress = true;
 
-        // Eliminar backup corrupto de Storage para que el nuevo sea limpio
+        // Eliminar backup previo de Storage
         try {
-            await store.db.storage.from('session-bucket').remove([`${SESSION_KEY}.tar`]);
+            await store.deleteSession(SESSION_KEY);
             console.log('[pair] Backup anterior eliminado de Storage');
         } catch (_) {}
 
@@ -379,8 +405,21 @@ process.on('unhandledRejection', (err) => {
 });
 
 process.on('SIGTERM', async () => {
-    console.log('SIGTERM - respaldando sesión antes de salir...');
+    console.log('SIGTERM - cerrando cliente y respaldando...');
     if (currentClient) {
+        // Cerrar Chrome limpiamente primero (flush de IndexedDB a disco)
+        try {
+            await Promise.race([
+                currentClient.destroy(),
+                new Promise((_, rej) => setTimeout(() => rej(new Error('destroy timeout')), 10000)),
+            ]);
+        } catch (e) {
+            console.log('[SIGTERM] destroy:', e.message);
+        }
+        currentClient = null;
+        clientReady = false;
+
+        // Backup después de Chrome cerrado — archivos estables
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try {
             await store.saveSession(SESSION_KEY, sessionDir);
@@ -388,7 +427,6 @@ process.on('SIGTERM', async () => {
         } catch (e) {
             console.log('[SIGTERM] Backup falló:', e.message);
         }
-        try { await currentClient.destroy(); } catch (_) {}
     }
     process.exit(0);
 });

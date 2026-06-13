@@ -6,15 +6,21 @@ const { promisify } = require('util');
 const execFileP = promisify(execFile);
 const BUCKET = 'session-bucket';
 
+const EXCLUDES = [
+    '--exclude=Cache', '--exclude=Code Cache', '--exclude=GPUCache',
+    '--exclude=CacheStorage', '--exclude=GrShaderCache', '--exclude=ShaderCache',
+    '--exclude=Dictionaries', '--exclude=BlobStorage', '--exclude=VideoDecodeStats',
+];
+
 async function _packDir(srcDir, dstFile) {
     const dirName = path.basename(srcDir);
     const parentDir = path.dirname(srcDir);
     console.log('[Store] empaquetando con tar...');
-    // tar sale con código 1 si un archivo cambia durante la lectura
-    // (ej: IndexedDB .log escribiendo concurrentemente). El tar se crea bien,
-    // LevelDB tolera lecturas concurrentes. Ignoramos el error.
+    // tar sale con código 1 si un archivo cambia durante la lectura.
+    // LevelDB tolera lecturas concurrentes (crash recovery built-in).
+    // Gzip (-z) reduce ~25 MB a ~5 MB.
     try {
-        await execFileP('tar', ['-cf', dstFile, '--exclude=Cache', '-C', parentDir, dirName], { timeout: 120000 });
+        await execFileP('tar', ['-czf', dstFile, ...EXCLUDES, '-C', parentDir, dirName], { timeout: 120000 });
     } catch (e) {
         if (fs.existsSync(dstFile) && fs.statSync(dstFile).size > 0) {
             console.log('[Store] tar creado (con avisos:', e.message.split('\n')[0].slice(0, 80) + ')');
@@ -26,7 +32,7 @@ async function _packDir(srcDir, dstFile) {
 }
 
 async function _unpackDir(srcFile, dstDir) {
-    await execFileP('tar', ['-xf', srcFile, '-C', dstDir], { timeout: 120000 });
+    await execFileP('tar', ['-xzf', srcFile, '-C', dstDir], { timeout: 120000 });
 }
 
 class SupabaseStore {
@@ -48,7 +54,7 @@ class SupabaseStore {
         if (!fs.existsSync(sourceDir)) {
             return console.log('[Store] sourceDir no existe:', sourceDir);
         }
-        const tmpFile = path.join(path.dirname(sourceDir), `session-${key}.tar`);
+        const tmpFile = path.join(path.dirname(sourceDir), `session-${key}.tar.gz`);
         try {
             await _packDir(sourceDir, tmpFile);
             const stat = fs.statSync(tmpFile);
@@ -56,7 +62,7 @@ class SupabaseStore {
 
             const buffer = fs.readFileSync(tmpFile);
             await this._ensureBucket();
-            const { error } = await this.db.storage.from(BUCKET).upload(`${key}.tar`, buffer, { upsert: true });
+            const { error } = await this.db.storage.from(BUCKET).upload(`${key}.tar.gz`, buffer, { upsert: true });
             if (error) return console.log('[Store] Storage upload error:', error.message);
             console.log('[Store] Sesión guardada');
         } catch (e) {
@@ -67,26 +73,24 @@ class SupabaseStore {
     }
 
     async restoreSession(key, destDir) {
-        const tmpFile = path.join(destDir, `session-${key}.tar`);
+        const tmpFile = path.join(destDir, `session-${key}.tar.gz`);
         try {
             console.log('[Store] restoreSession key:', key, 'destDir:', destDir);
             await this._ensureBucket();
-            const { data, error } = await this.db.storage.from(BUCKET).download(`${key}.tar`);
+            const { data, error } = await this.db.storage.from(BUCKET).download(`${key}.tar.gz`);
             if (error || !data) {
                 return console.log('[Store] No hay sesión en Storage') || false;
             }
             const buffer = Buffer.from(await data.arrayBuffer());
             console.log('[Store] Descargado:', (buffer.length / 1024).toFixed(1), 'KB');
 
-            // Asegurar que destDir existe
             await fs.promises.mkdir(destDir, { recursive: true });
-            // Asegurar que el directorio de sesión existe
             const sessionDir = path.join(destDir, `session-${key}`);
             await fs.promises.mkdir(sessionDir, { recursive: true });
 
             fs.writeFileSync(tmpFile, buffer);
             if (buffer.length < 2048) {
-                console.log('[Store] tar muy pequeño, podría estar vacío');
+                console.log('[Store] tar.gz muy pequeño, podría estar vacío');
             }
 
             await _unpackDir(tmpFile, destDir);
@@ -103,9 +107,14 @@ class SupabaseStore {
     async sessionExists(key) {
         try {
             await this._ensureBucket();
-            const { data, error } = await this.db.storage.from(BUCKET).list('', { search: `${key}.tar` });
+            const { data, error } = await this.db.storage.from(BUCKET).list('', { search: `${key}.tar.gz` });
             return !error && !!data?.length;
         } catch { return false; }
+    }
+
+    async deleteSession(key) {
+        const { error } = await this.db.storage.from(BUCKET).remove([`${key}.tar.gz`]);
+        if (error) console.log('[Store] deleteSession error:', error.message);
     }
 }
 
