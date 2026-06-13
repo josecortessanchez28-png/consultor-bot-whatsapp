@@ -42,6 +42,38 @@ let clientReady = false;
 let everConnected = false;
 let pairingInProgress = false;
 let currentClient = null;
+let pendingPairingCode = null;
+let pendingPairingError = null;
+
+async function startPairing(phone) {
+    try {
+        if (currentClient) {
+            try { await currentClient.destroy(); } catch (_) {}
+            currentClient = null;
+        }
+        clientReady = false;
+
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+
+        console.log('[pair] Creando cliente con pairWithPhoneNumber para:', phone);
+        currentClient = makeClient(phone);
+
+        currentClient.on('code', (code) => {
+            console.log('[pair] Código obtenido:', code);
+            pendingPairingCode = code;
+        });
+
+        setupEvents(currentClient);
+        await currentClient.initialize();
+        console.log('[pair] initialize() completado');
+    } catch (e) {
+        console.log('[pair] Error en startPairing:', e.message);
+        pendingPairingError = e.message;
+    } finally {
+        pairingInProgress = false;
+    }
+}
 
 function makeClient(phoneNumber) {
     const opts = {
@@ -155,75 +187,64 @@ app.post('/pair', async (req, res) => {
     const phone = req.body.phone?.replace(/[^0-9]/g, '');
     if (!phone || phone.length < 7) return res.status(400).send('Número inválido');
 
+    pendingPairingCode = null;
+    pendingPairingError = null;
     pairingInProgress = true;
 
-    try {
-        if (currentClient) {
-            try { await currentClient.destroy(); } catch (_) {}
-            currentClient = null;
-        }
-        clientReady = false;
+    // Lanzar en background (no esperar)
+    startPairing(phone);
 
-        // Clear old session to force fresh pairing
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-
-        console.log('[pair] Creando cliente con pairWithPhoneNumber para:', phone);
-        currentClient = makeClient(phone);
-
-        // Capture the pairing code from whatApp-web.js 'code' event
-        const codePromise = new Promise((resolve, reject) => {
-            const timeout = setTimeout(() => reject(new Error('Tiempo de espera agotado (60s)')), 60000);
-            currentClient.on('code', (code) => {
-                clearTimeout(timeout);
-                resolve(code);
-            });
-        });
-
-        setupEvents(currentClient);
-        currentClient.initialize().catch(e => console.log('[pair] init error:', e.message));
-
-        const code = await codePromise;
-        console.log('[pair] Código obtenido:', code);
-
-        res.type('html');
-        res.send(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Código de vinculación</title>
+    res.type('html');
+    res.send(`<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Generando código...</title>
 <style>
 body{background:#111;color:#eee;font-family:sans-serif;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0}
 .wrap{text-align:center}
-code{font-size:36px;background:#1a1a2e;padding:20px 50px;border-radius:12px;display:inline-block;margin:20px 0;color:#25D366;letter-spacing:10px;font-weight:bold;border:2px solid #25D366}
-.instructions{background:#222;padding:20px;border-radius:8px;text-align:left;max-width:400px;margin:15px auto;font-size:14px;color:#ccc;line-height:1.6}
-.instructions b{color:#25D366}
-p{color:#888;font-size:13px}
+.spinner{border:4px solid #333;border-top:4px solid #25D366;border-radius:50%;width:40px;height:40px;animation:spin 1s linear infinite;margin:20px auto}
+@keyframes spin{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+p{color:#888}
+a{color:#25D366}
 </style></head>
 <body><div class="wrap">
-<h2>📱 Código de 8 caracteres</h2>
-<code>${code}</code>
-<div class="instructions">
-1. En tu teléfono abre WhatsApp<br>
-2. Ve a <b>Ajustes → Dispositivos vinculados</b><br>
-3. Toca <b>Vincular un dispositivo</b><br>
-4. Elige <b>Vincular con número de teléfono</b><br>
-5. Ingresa este código de 8 caracteres
-</div>
-<p style="color:#666">La página se actualizará automáticamente cuando se vincule.</p>
+<h2>Generando código...</h2>
+<div class="spinner"></div>
+<p id="msg">Iniciando navegador, espera unos segundos...</p>
 <script>
-async function poll(){
-  try {
-    let r=await fetch('/qr-data');
-    let d=await r.json();
-    if(d.connected) location.href='/pair';
-  }catch(e){}
+let pollCount = 0;
+let maxPolls = 180; // 3 minutos
+async function check() {
+    if (pollCount++ > maxPolls) {
+        document.body.innerHTML = '<div class="wrap"><h2>Tiempo de espera agotado</h2><p>No se pudo generar el código. <a href="/pair">Intentar de nuevo</a></p></div>';
+        return;
+    }
+    try {
+        let r = await fetch('/pair-data');
+        let d = await r.json();
+        if (d.error) {
+            document.body.innerHTML = '<div class="wrap"><h2>Error</h2><p>' + d.error + '</p><a href="/pair">Intentar de nuevo</a></div>';
+            return;
+        }
+        if (d.code) {
+            document.body.innerHTML = '<div class="wrap"><h2>📱 Código de 8 caracteres</h2><code style="font-size:36px;background:#1a1a2e;padding:20px 50px;border-radius:12px;display:inline-block;margin:20px 0;color:#25D366;letter-spacing:10px;font-weight:bold;border:2px solid #25D366">' + d.code + '</code><div class="instructions" style="background:#222;padding:20px;border-radius:8px;text-align:left;max-width:400px;margin:15px auto;font-size:14px;color:#ccc;line-height:1.6"><b style="color:#25D366">1.</b> En tu teléfono abre WhatsApp<br><b style="color:#25D366">2.</b> Ve a <b>Ajustes → Dispositivos vinculados</b><br><b style="color:#25D366">3.</b> Toca <b>Vincular un dispositivo</b><br><b style="color:#25D366">4.</b> Elige <b>Vincular con número de teléfono</b><br><b style="color:#25D366">5.</b> Ingresa este código</div><p style="color:#666">La página se actualizará automáticamente cuando se vincule.</p>';
+            // Poll connection status
+            setInterval(async () => {
+                try {
+                    let r = await fetch('/qr-data');
+                    let d = await r.json();
+                    if (d.connected) location.href = '/pair';
+                } catch(e) {}
+            }, 3000);
+            return;
+        }
+        if (pollCount < 10) document.getElementById('msg').textContent = 'Iniciando navegador, espera unos segundos...';
+        else if (pollCount < 30) document.getElementById('msg').textContent = 'Cargando WhatsApp Web...';
+        else document.getElementById('msg').textContent = 'Generando código de vinculación...';
+    } catch(e) {}
+    setTimeout(check, 1000);
 }
-setInterval(poll, 3000);
+check();
 </script>
 </div></body></html>`);
-    } catch (e) {
-        pairingInProgress = false;
-        console.log('[pair] Error:', e.message);
-        res.status(500).send(`Error: ${e.message}. <a href="/pair">Intentar de nuevo</a>`);
-    }
 });
 
 app.get('/qr', (req, res) => {
@@ -232,6 +253,13 @@ app.get('/qr', (req, res) => {
 
 app.get('/qr-data', (req, res) => {
     res.json({ qr: null, connected: clientReady });
+});
+
+app.get('/pair-data', (req, res) => {
+    if (clientReady) return res.json({ connected: true, code: null, error: null });
+    if (pendingPairingError) return res.json({ connected: false, code: null, error: pendingPairingError });
+    if (pendingPairingCode) return res.json({ connected: false, code: pendingPairingCode, error: null });
+    res.json({ connected: false, code: null, error: null });
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
