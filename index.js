@@ -42,6 +42,7 @@ const store = new SupabaseStore();
 let displayQr = null;
 let clientReady = false;
 let everConnected = false;
+let pairingInProgress = false;
 let currentClient = null;
 
 function makeClient() {
@@ -62,7 +63,7 @@ function makeClient() {
 
 function setupClient(client) {
     client.on('qr', (qr) => {
-        if (everConnected) return;
+        if (everConnected || pairingInProgress) return;
         displayQr = qr;
         console.log('=== QR ===');
         qrcodeTerminal.generate(qr, { small: true });
@@ -84,6 +85,7 @@ function setupClient(client) {
 
     client.on('disconnected', (reason) => {
         clientReady = false;
+        pairingInProgress = false;
         console.log('Desconectado:', reason);
     });
 
@@ -157,6 +159,8 @@ app.post('/pair', async (req, res) => {
     if (!phone || phone.length < 7) return res.status(400).send('Número inválido');
     if (!currentClient) return res.status(500).send('Cliente no disponible');
 
+    pairingInProgress = true;
+
     try {
         console.log('[pair] Solicitando código para:', phone);
         const code = await currentClient.requestPairingCode(phone);
@@ -195,6 +199,7 @@ setInterval(poll, 3000);
 </script>
 </div></body></html>`);
     } catch (e) {
+        pairingInProgress = false;
         console.log('[pair] Error:', e.message);
         res.status(500).send(`Error: ${e.message}. <a href="/pair">Intentar de nuevo</a>`);
     }
