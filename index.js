@@ -55,6 +55,11 @@ function makeClient(phoneNumber) {
                 '--no-sandbox', '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage', '--no-zygote',
                 '--single-process', '--disable-gpu',
+                '--disable-features=site-per-process',
+                '--disable-extensions',
+                '--disable-component-extensions-with-background-pages',
+                '--disable-background-networking',
+                '--max_old_space_size=256',
             ],
         },
     };
@@ -103,12 +108,31 @@ function setupEvents(client) {
 
 async function cleanupChromeLocks() {
     const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-    const locks = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
-    for (const lock of locks) {
-        const p = path.join(sessionDir, lock);
-        try { fs.unlinkSync(p); } catch (_) {}
+    // Limpiar archivos lock de Chrome
+    const toRemove = [
+        'SingletonLock', 'SingletonSocket', 'SingletonCookie',
+        'SingletonConnect', 'SingletonListen',
+    ];
+    for (const f of toRemove) {
+        try { fs.unlinkSync(path.join(sessionDir, f)); } catch (_) {}
     }
-    try { fs.rmSync(path.join(sessionDir, 'Default', 'Cache'), { recursive: true, force: true }); } catch (_) {}
+    // Limpiar cachés y datos temporales que puedan estar corruptos
+    const rmDirs = [
+        path.join(sessionDir, 'Default', 'Cache'),
+        path.join(sessionDir, 'Default', 'Code Cache'),
+        path.join(sessionDir, 'Default', 'GPUCache'),
+        path.join(sessionDir, 'Default', 'Service Worker', 'Cache Storage'),
+        path.join(sessionDir, 'ShaderCache'),
+        path.join(sessionDir, 'Crashpad'),
+        path.join(sessionDir, 'Crash Reports'),
+    ];
+    for (const d of rmDirs) {
+        try { fs.rmSync(d, { recursive: true, force: true }); } catch (_) {}
+    }
+    // Matar zombies de Chrome (solo en Linux/Render)
+    try {
+        require('child_process').execFileSync('pkill', ['-f', 'chrome'], { timeout: 3000 });
+    } catch (_) {}
 }
 
 async function startClient() {
@@ -128,21 +152,31 @@ async function startClient() {
 }
 
 async function connectClient() {
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < 10; i++) {
         try {
             await cleanupChromeLocks();
-            if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
+            if (currentClient) { try { await currentClient.destroy(); } catch (_) {} }
             currentClient = makeClient();
             setupEvents(currentClient);
             await currentClient.initialize();
             console.log('[index] Cliente inicializado');
             return;
         } catch (e) {
-            console.log(`[index] connectClient intento ${i + 1}/3 falló:`, e?.message?.slice(0, 100) || e);
-            await new Promise(r => setTimeout(r, 8000));
+            const delay = Math.min(1000 * Math.pow(1.5, i), 30000);
+            console.log(`[index] connectClient intento ${i + 1}/10 falló:`, e?.message?.slice(0, 100) || e);
+            console.log(`[index] Reintentando en ${Math.round(delay / 1000)}s...`);
+            await new Promise(r => setTimeout(r, delay));
         }
     }
-    console.log('[index] No se pudo conectar tras 3 intentos');
+    // Si llegamos aquí, todo falló — limpiar sesión corrupta
+    console.log('[index] 10 intentos fallidos, limpiando sesión corrupta...');
+    const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+    try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+    try {
+        // Eliminar también de Storage para que no se restaure la misma sesión corrupta
+        await store.db.storage.from('session-bucket').remove([`${SESSION_KEY}.tar`]);
+        console.log('[index] Backup corrupto eliminado de Storage');
+    } catch (_) {}
 }
 
 function startKeepAlive() {
