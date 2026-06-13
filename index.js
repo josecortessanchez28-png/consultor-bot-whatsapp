@@ -169,8 +169,15 @@ function startKeepAlive() {
 
 // ----- Pairing code generation -----
 
+let pairingRunning = false;
+
 async function startPairing(phone) {
     try {
+        if (pairingRunning) {
+            console.log('[pair] Ya hay un pairing en curso, ignorando');
+            return;
+        }
+        pairingRunning = true;
         pendingPairingCode = null;
         pendingPairingError = null;
 
@@ -186,11 +193,23 @@ async function startPairing(phone) {
             console.log('[pair] Backup anterior eliminado de Storage');
         } catch (_) {}
 
+        // Destruir cliente anterior si existe
         if (currentClient) {
             try { await currentClient.destroy(); } catch (_) {}
             currentClient = null;
         }
         clientReady = false;
+
+        // Matar TODOS los procesos Chrome zombies
+        try { require('child_process').execFileSync('pkill', ['-9', '-f', 'chrome'], { timeout: 5000 }); } catch (_) {}
+        try { require('child_process').execFileSync('pkill', ['-9', '-f', 'Chromium'], { timeout: 5000 }); } catch (_) {}
+        await new Promise(r => setTimeout(r, 2000));
+
+        // Borrar el perfil local por completo para evitar conflicto de directorio
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+        try { fs.rmSync(path.join(AUTH_DIR, 'Default'), { recursive: true, force: true }); } catch (_) {}
+        console.log('[pair] Perfil local eliminado');
 
         console.log('[pair] Creando cliente...');
         currentClient = makeClient();
@@ -239,6 +258,7 @@ async function startPairing(phone) {
         pendingPairingError = 'Error: ' + (e?.message || e);
     } finally {
         pairingInProgress = false;
+        pairingRunning = false;
     }
 }
 
