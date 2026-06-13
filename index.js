@@ -125,21 +125,69 @@ function startKeepAlive() {
 
 async function generatePairingCode(page, phone) {
     return await page.evaluate(async (phoneNumber) => {
-        let waited = 0;
-        while (!window.AuthStore?.PairingCodeLinkUtils) {
-            await new Promise(r => setTimeout(r, 200));
-            waited += 200;
-            if (waited > 30000) throw new Error('Tiempo esperando PairingCodeLinkUtils');
+        const methods = [];
+
+        // Método 1: PairingCodeLinkUtils (whatsapp-web.js estándar)
+        methods.push(async () => {
+            let waited = 0;
+            while (!window.AuthStore?.PairingCodeLinkUtils) {
+                await new Promise(r => setTimeout(r, 300));
+                waited += 300;
+                if (waited > 20000) throw new Error('timeout PairingCodeLinkUtils');
+            }
+            const utils = window.AuthStore.PairingCodeLinkUtils;
+            utils.setPairingType('ALT_DEVICE_LINKING');
+            await utils.initializeAltDeviceLinking();
+            return await utils.startAltLinkingFlow(phoneNumber, true);
+        });
+
+        // Método 2: PhonePairing API directa
+        methods.push(async () => {
+            let waited = 0;
+            while (!window.PhonePairing?.requestPairCode) {
+                await new Promise(r => setTimeout(r, 300));
+                waited += 300;
+                if (waited > 20000) throw new Error('timeout PhonePairing');
+            }
+            return await window.PhonePairing.requestPairCode(phoneNumber);
+        });
+
+        // Método 3: WAWebAltDeviceLinkingApi
+        methods.push(async () => {
+            let waited = 0;
+            while (!window.require?.('WAWebAltDeviceLinkingApi')?.startAltLinkingFlow) {
+                await new Promise(r => setTimeout(r, 300));
+                waited += 300;
+                if (waited > 20000) throw new Error('timeout WAWebAltDeviceLinkingApi');
+            }
+            const api = window.require('WAWebAltDeviceLinkingApi');
+            return await api.startAltLinkingFlow(phoneNumber, true);
+        });
+
+        // Método 4: AuthStore.PhonePairing
+        methods.push(async () => {
+            let waited = 0;
+            while (!window.AuthStore?.PhonePairing?.requestPairCode) {
+                await new Promise(r => setTimeout(r, 300));
+                waited += 300;
+                if (waited > 20000) throw new Error('timeout AuthStore.PhonePairing');
+            }
+            return await window.AuthStore.PhonePairing.requestPairCode(phoneNumber);
+        });
+
+        for (const method of methods) {
+            try {
+                return await method();
+            } catch (e) {
+                continue;
+            }
         }
-        const utils = window.AuthStore.PairingCodeLinkUtils;
-        utils.setPairingType('ALT_DEVICE_LINKING');
-        await utils.initializeAltDeviceLinking();
-        return await utils.startAltLinkingFlow(phoneNumber, true);
+        throw new Error('Todos los métodos de vinculación fallaron');
     }, phone);
 }
 
 async function startPairing(phone, attempt = 1) {
-    const maxAttempts = 3;
+    const maxAttempts = 2;
     try {
         pendingPairingCode = null;
         pendingPairingError = null;
@@ -165,6 +213,9 @@ async function startPairing(phone, attempt = 1) {
         await currentClient.initialize();
         console.log('[pair] initialize() completado');
 
+        // Esperar a que la página se asiente
+        await new Promise(r => setTimeout(r, 5000));
+
         if (!pendingPairingCode && currentClient.pupPage) {
             console.log('[pair] Generando código vía directa...');
             const code = await generatePairingCode(currentClient.pupPage, phone);
@@ -172,13 +223,13 @@ async function startPairing(phone, attempt = 1) {
             pendingPairingCode = code;
         }
     } catch (e) {
-        console.log(`[pair] Error intento ${attempt}:`, e.message);
+        console.log(`[pair] Error intento ${attempt}:`, e.message || e);
         if (attempt < maxAttempts) {
-            console.log(`[pair] Reintentando en 3s...`);
-            await new Promise(r => setTimeout(r, 3000));
+            console.log(`[pair] Reintentando en 5s...`);
+            await new Promise(r => setTimeout(r, 5000));
             return startPairing(phone, attempt + 1);
         }
-        pendingPairingError = `Error tras ${maxAttempts} intentos: ${e.message}`;
+        pendingPairingError = 'No se pudo generar el código. Revisa los logs.';
     } finally {
         pairingInProgress = false;
     }
