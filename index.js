@@ -57,7 +57,7 @@ function makeClient(phoneNumber) {
             protocolTimeout: 120000,
             args: [
                 '--single-process',
-                '--js-flags=--max-old-space-size=400',
+                '--js-flags=--max-old-space-size=300',
                 '--no-sandbox', '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage', '--no-zygote',
                 '--disable-gpu',
@@ -130,13 +130,25 @@ function setupEvents(client) {
 
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
 
-        // Backup inicial a los 60s (IndexedDB ya estable)
+        // Backup inmediato (tokens ya están en IndexedDB, LevelDB tolera cortes)
+        (async () => {
+            try {
+                console.log('[backup] Guardando copia inmediata...');
+                await store.saveSession(SESSION_KEY, sessionDir);
+                console.log('[backup] Copia inmediata guardada');
+            } catch (e) {
+                console.log('[backup] Error en backup inmediato:', e.message);
+            }
+        })();
+
+        // Backup a los 60s (tras estabilización completa de IndexedDB)
         setTimeout(async () => {
             try {
-                console.log('[backup] Guardando copia inicial (60s)...');
+                console.log('[backup] Guardando copia estable (60s)...');
                 await store.saveSession(SESSION_KEY, sessionDir);
+                console.log('[backup] Copia estable guardada');
             } catch (e) {
-                console.log('[backup] Error en backup inicial:', e.message);
+                console.log('[backup] Error en backup 60s:', e.message);
             }
         }, 60000);
 
