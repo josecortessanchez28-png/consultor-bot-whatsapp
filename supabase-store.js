@@ -9,17 +9,46 @@ async function _packDir(srcDir, dstFile) {
     const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-'));
     const tmpDir = path.join(tmpRoot, path.basename(srcDir));
     try {
-        // fs.cp es cross-platform (Node >=16.7) y maneja todo tipo de archivos
         await fs.promises.cp(srcDir, tmpDir, { recursive: true, force: true });
-        const entries = fs.readdirSync(tmpDir);
-        console.log('[Store] archivos en sesión:', entries.length);
+
+        // Diagnóstico: contar recursivamente y sumar bytes
+        let totalFiles = 0;
+        let totalSize = 0;
+        function scan(dir) {
+            const entries = fs.readdirSync(dir, { withFileTypes: true });
+            for (const e of entries) {
+                totalFiles++;
+                const full = path.join(dir, e.name);
+                if (e.isDirectory()) scan(full);
+                else if (e.isFile()) totalSize += fs.statSync(full).size;
+            }
+        }
+        scan(tmpDir);
+        console.log('[Store] archivos (recursivo):', totalFiles, 'bytes:', totalSize);
+
         return new Promise((resolve, reject) => {
             const output = fs.createWriteStream(dstFile);
             const archive = archiver('tar', { gzip: false });
             output.on('close', () => resolve());
             archive.on('error', (e) => reject(e));
             archive.pipe(output);
-            archive.directory(tmpDir, false);
+
+            // Añadir cada archivo manualmente
+            function add(dir, prefix) {
+                const entries = fs.readdirSync(dir, { withFileTypes: true });
+                for (const e of entries) {
+                    const full = path.join(dir, e.name);
+                    const name = prefix ? path.join(prefix, e.name) : e.name;
+                    if (e.isDirectory()) {
+                        archive.append('', { name: name + '/', type: 'directory' });
+                        add(full, name);
+                    } else if (e.isFile()) {
+                        archive.file(full, { name });
+                    }
+                }
+            }
+            add(tmpDir, '');
+
             archive.finalize();
         });
     } finally {
