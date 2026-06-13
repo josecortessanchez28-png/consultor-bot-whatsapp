@@ -2,20 +2,47 @@ const { createClient } = require('@supabase/supabase-js');
 const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
-const { pipeline } = require('stream/promises');
+const os = require('os');
 
 const BUCKET = 'session-bucket';
 
+// Copia el directorio de sesión a un temporal para evitar "Size mismatch"
+async function _copyDir(src, dst) {
+    await fs.promises.mkdir(dst, { recursive: true });
+    const entries = await fs.promises.readdir(src, { withFileTypes: true });
+    for (const entry of entries) {
+        const s = path.join(src, entry.name);
+        const d = path.join(dst, entry.name);
+        if (entry.isDirectory()) {
+            await _copyDir(s, d);
+        } else if (entry.isFile()) {
+            try {
+                // leer y escribir en chunks para evitar archivos bloqueados
+                const content = await fs.promises.readFile(s);
+                await fs.promises.writeFile(d, content);
+            } catch (_) {
+                // ignorar archivos que no se puedan leer (ej: bloqueados por otro proceso)
+            }
+        }
+    }
+}
+
 async function _packDir(srcDir, dstFile) {
-    return new Promise((resolve, reject) => {
-        const output = fs.createWriteStream(dstFile);
-        const archive = archiver('tar', { gzip: false });
-        output.on('close', () => resolve());
-        archive.on('error', (e) => reject(e));
-        archive.pipe(output);
-        archive.directory(srcDir, path.basename(srcDir));
-        archive.finalize();
-    });
+    const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-'));
+    try {
+        await _copyDir(srcDir, path.join(tmpDir, path.basename(srcDir)));
+        return new Promise((resolve, reject) => {
+            const output = fs.createWriteStream(dstFile);
+            const archive = archiver('tar', { gzip: false });
+            output.on('close', () => resolve());
+            archive.on('error', (e) => reject(e));
+            archive.pipe(output);
+            archive.directory(tmpDir, false);
+            archive.finalize();
+        });
+    } finally {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
+    }
 }
 
 async function _unpackDir(srcFile, dstDir) {
@@ -94,7 +121,5 @@ class SupabaseStore {
         } catch { return false; }
     }
 }
-
-module.exports = SupabaseStore;
 
 module.exports = SupabaseStore;
