@@ -44,7 +44,6 @@ let pairingInProgress = false;
 let clientStarting = false;
 let sessionRestored = false;
 let qrCount = 0;
-let backupTimeout = null;
 let backupInterval = null;
 let currentClient = null;
 let pendingPairingCode = null;
@@ -124,35 +123,20 @@ function setupEvents(client) {
         everConnected = true;
         sessionRestored = false;
         qrCount = 0;
-        if (backupTimeout) clearTimeout(backupTimeout);
         if (backupInterval) clearInterval(backupInterval);
         console.log('WhatsApp conectado correctamente');
 
-        await new Promise(r => setTimeout(r, 1000));
-
+        // Backup periódico cada 15 min (después de que la BD se estabilice)
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try {
-            console.log('[backup] Backup 1s...');
-            await store.saveSession(SESSION_KEY, sessionDir);
-        } catch (e) {
-            console.log('[backup] Error:', e.message);
-        }
-
-        backupTimeout = setTimeout(async () => {
-            try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
-        }, 120000);
-
         backupInterval = setInterval(async () => {
             try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
-        }, 300000);
+        }, 900000);
     });
 
     client.on('disconnected', (reason) => {
         console.log('Desconectado:', reason);
         qrCount = 0;
-        if (backupTimeout) clearTimeout(backupTimeout);
         if (backupInterval) clearInterval(backupInterval);
-        backupTimeout = null;
         backupInterval = null;
         clientReady = false;
         pairingInProgress = false;
