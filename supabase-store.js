@@ -7,12 +7,21 @@ const execFileP = promisify(execFile);
 const BUCKET = 'session-bucket';
 
 async function _packDir(srcDir, dstFile) {
-    // Usar tar del sistema directamente sobre la fuente (sin copia intermedia)
-    // tar maneja correctamente archivos abiertos por Chrome/IndexedDB
     const dirName = path.basename(srcDir);
     const parentDir = path.dirname(srcDir);
     console.log('[Store] empaquetando con tar...');
-    await execFileP('tar', ['-cf', dstFile, '--exclude=Cache', '-C', parentDir, dirName], { timeout: 120000 });
+    // tar sale con código 1 si un archivo cambia durante la lectura
+    // (ej: IndexedDB .log escribiendo concurrentemente). El tar se crea bien,
+    // LevelDB tolera lecturas concurrentes. Ignoramos el error.
+    try {
+        await execFileP('tar', ['-cf', dstFile, '--exclude=Cache', '-C', parentDir, dirName], { timeout: 120000 });
+    } catch (e) {
+        if (fs.existsSync(dstFile) && fs.statSync(dstFile).size > 0) {
+            console.log('[Store] tar creado (con avisos:', e.message.split('\n')[0].slice(0, 80) + ')');
+            return;
+        }
+        throw e;
+    }
     console.log('[Store] tar creado');
 }
 
