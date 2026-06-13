@@ -4,8 +4,7 @@ const path = require('path');
 const express = require('express');
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const SupabaseStore = require('./supabase-store');
-const qrcode = require('qrcode');
-const qrcodeTerminal = require('qrcode-terminal');
+
 const https = require('https');
 const bot = require('./bot');
 
@@ -39,7 +38,6 @@ const SESSION_KEY = 'consultor-bot';
 
 const store = new SupabaseStore();
 
-let displayQr = null;
 let clientReady = false;
 let everConnected = false;
 let pairingInProgress = false;
@@ -62,17 +60,9 @@ function makeClient() {
 }
 
 function setupClient(client) {
-    client.on('qr', (qr) => {
-        if (everConnected || pairingInProgress) return;
-        displayQr = qr;
-        console.log('=== QR ===');
-        qrcodeTerminal.generate(qr, { small: true });
-    });
-
     client.on('ready', async () => {
         clientReady = true;
         everConnected = true;
-        displayQr = null;
         console.log('WhatsApp conectado correctamente');
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         setTimeout(async () => {
@@ -123,7 +113,7 @@ function startKeepAlive() {
 }
 
 app.get('/', (req, res) => {
-    res.json({ status: clientReady ? 'conectado' : 'conectando', qr: !!displayQr });
+    res.json({ status: clientReady ? 'conectado' : 'conectando' });
 });
 
 app.get('/pair', (req, res) => {
@@ -149,7 +139,7 @@ h2{margin-bottom:0}
 <button type="submit">Obtener código</button>
 </form>
 <p>Incluye código de país (ej: 52 México, 34 España, 1 USA). Sin +, sin espacios, sin guiones.</p>
-<div class="help">Alternativa: <a href="/qr" style="color:#25D366">escanear QR</a></div>
+
 </div></body></html>`);
 });
 
@@ -205,49 +195,12 @@ setInterval(poll, 3000);
     }
 });
 
-app.get('/qr', async (req, res) => {
-    res.type('html');
-    const img = displayQr ? await qrcode.toDataURL(displayQr) : null;
-    res.send(`<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>QR Consultor Bot</title>
-<style>
-body{background:#111;display:flex;justify-content:center;align-items:center;min-height:95vh;margin:0;font-family:sans-serif}
-.wrap{text-align:center}
-img{width:280px;height:280px;border:5px solid #333;border-radius:12px;background:white;padding:10px}
-p{color:#888;font-size:13px;margin:8px 0}
-</style></head>
-<body><div class="wrap">
-<p id="status">${displayQr ? 'Escanea para conectar' : clientReady ? 'Conectado' : 'Generando QR...'}</p>
-<img id="qri" src="${img || ''}" alt="QR" style="${img ? '' : 'display:none'}"/>
-<p>Abre WhatsApp → Ajustes → Dispositivos vinculados</p>
-<p>¿Problemas con el QR? Usa <a href="/pair" style="color:#25D366">vinculación por número</a></p>
-<script>
-async function poll(){
-  try {
-    let r=await fetch('/qr-data');
-    if(!r.ok) return;
-    let d=await r.json();
-    let img=document.getElementById('qri');
-    let st=document.getElementById('status');
-    if(d.connected) {
-      img.style.display='none';
-      st.textContent='Conectado';
-    } else if(d.qr) {
-      img.style.display='inline';
-      img.src=d.qr;
-      st.textContent='Escanea para conectar';
-    }
-  }catch(e){}
-}
-poll(); setInterval(poll, 5000);
-</script>
-</div></body></html>`);
+app.get('/qr', (req, res) => {
+    res.redirect('/pair');
 });
 
-app.get('/qr-data', async (req, res) => {
-    if (!displayQr) return res.json({ qr: null, connected: clientReady });
-    const img = await qrcode.toDataURL(displayQr);
-    res.json({ qr: img, connected: clientReady });
+app.get('/qr-data', (req, res) => {
+    res.json({ qr: null, connected: clientReady });
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
