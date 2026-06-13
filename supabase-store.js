@@ -32,7 +32,9 @@ async function _packDir(srcDir, dstFile) {
 }
 
 async function _unpackDir(srcFile, dstDir) {
-    await execFileP('tar', ['-xzf', srcFile, '-C', dstDir], { timeout: 120000 });
+    // Detectar si es gzip por extensión: .tar.gz → -xzf, .tar → -xf
+    const gz = srcFile.endsWith('.tar.gz');
+    await execFileP('tar', gz ? ['-xzf', srcFile, '-C', dstDir] : ['-xf', srcFile, '-C', dstDir], { timeout: 120000 });
 }
 
 class SupabaseStore {
