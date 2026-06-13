@@ -100,18 +100,45 @@ function setupEvents(client) {
     });
 }
 
+async function cleanupChromeLocks() {
+    const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+    const locks = ['SingletonLock', 'SingletonSocket', 'SingletonCookie'];
+    for (const lock of locks) {
+        const p = path.join(sessionDir, lock);
+        try { fs.unlinkSync(p); } catch (_) {}
+    }
+    try { fs.rmSync(path.join(sessionDir, 'Default', 'Cache'), { recursive: true, force: true }); } catch (_) {}
+}
+
 async function startClient() {
     const exists = await store.sessionExists(SESSION_KEY);
     if (exists) {
         console.log('[index] Restaurando sesión...');
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
+        await cleanupChromeLocks();
         if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
-        currentClient = makeClient();
-        setupEvents(currentClient);
-        currentClient.initialize();
+        await connectClient();
     } else {
         console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
     }
+}
+
+async function connectClient() {
+    for (let i = 0; i < 3; i++) {
+        try {
+            await cleanupChromeLocks();
+            if (currentClient) { try { currentClient.destroy(); } catch (_) {} }
+            currentClient = makeClient();
+            setupEvents(currentClient);
+            await currentClient.initialize();
+            console.log('[index] Cliente inicializado');
+            return;
+        } catch (e) {
+            console.log(`[index] connectClient intento ${i + 1}/3 falló:`, e?.message?.slice(0, 100) || e);
+            await new Promise(r => setTimeout(r, 5000));
+        }
+    }
+    console.log('[index] No se pudo conectar tras 3 intentos');
 }
 
 function startKeepAlive() {
@@ -136,6 +163,7 @@ async function startPairing(phone) {
 
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+        await cleanupChromeLocks();
 
         console.log('[pair] Creando cliente (modo QR)...');
         currentClient = makeClient();
