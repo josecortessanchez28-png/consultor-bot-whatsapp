@@ -1,66 +1,22 @@
 const { createClient } = require('@supabase/supabase-js');
-const archiver = require('archiver');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { execFile } = require('child_process');
+const { promisify } = require('util');
+const execFileP = promisify(execFile);
 const BUCKET = 'session-bucket';
 
 async function _packDir(srcDir, dstFile) {
-    const tmpRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'session-'));
-    const tmpDir = path.join(tmpRoot, path.basename(srcDir));
-    try {
-        await fs.promises.cp(srcDir, tmpDir, { recursive: true, force: true });
-
-        // Diagnóstico: contar recursivamente y sumar bytes
-        let totalFiles = 0;
-        let totalSize = 0;
-        function scan(dir) {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const e of entries) {
-                totalFiles++;
-                const full = path.join(dir, e.name);
-                if (e.isDirectory()) scan(full);
-                else if (e.isFile()) totalSize += fs.statSync(full).size;
-            }
-        }
-        scan(tmpDir);
-        console.log('[Store] archivos (recursivo):', totalFiles, 'bytes:', totalSize);
-
-        return new Promise((resolve, reject) => {
-            const output = fs.createWriteStream(dstFile);
-            const archive = archiver('tar', { gzip: false });
-            output.on('close', () => resolve());
-            archive.on('error', (e) => reject(e));
-            archive.pipe(output);
-
-            // Añadir cada archivo manualmente, preservando la estructura
-            const rootName = path.basename(srcDir);
-            function add(dir, prefix) {
-                const entries = fs.readdirSync(dir, { withFileTypes: true });
-                for (const e of entries) {
-                    const full = path.join(dir, e.name);
-                    const name = prefix ? path.join(prefix, e.name) : path.join(rootName, e.name);
-                    if (e.isDirectory()) {
-                        archive.append('', { name: name + '/', type: 'directory' });
-                        add(full, name);
-                    } else if (e.isFile()) {
-                        archive.file(full, { name });
-                    }
-                }
-            }
-            add(tmpDir, '');
-
-            archive.finalize();
-        });
-    } finally {
-        try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch (_) {}
-    }
+    // Usar tar del sistema directamente sobre la fuente (sin copia intermedia)
+    // tar maneja correctamente archivos abiertos por Chrome/IndexedDB
+    const dirName = path.basename(srcDir);
+    const parentDir = path.dirname(srcDir);
+    console.log('[Store] empaquetando con tar...');
+    await execFileP('tar', ['-cf', dstFile, '-C', parentDir, dirName], { timeout: 120000 });
+    console.log('[Store] tar creado');
 }
 
 async function _unpackDir(srcFile, dstDir) {
-    const { execFile } = require('child_process');
-    const { promisify } = require('util');
-    const execFileP = promisify(execFile);
     await execFileP('tar', ['-xf', srcFile, '-C', dstDir], { timeout: 120000 });
 }
 
@@ -85,10 +41,9 @@ class SupabaseStore {
         }
         const tmpFile = path.join(path.dirname(sourceDir), `session-${key}.tar`);
         try {
-            console.log('[Store] empaquetando con archiver...');
             await _packDir(sourceDir, tmpFile);
             const stat = fs.statSync(tmpFile);
-            console.log('[Store] tar creado:', (stat.size / 1024).toFixed(1), 'KB');
+            console.log('[Store] tar:', (stat.size / 1024).toFixed(1), 'KB');
 
             const buffer = fs.readFileSync(tmpFile);
             await this._ensureBucket();
