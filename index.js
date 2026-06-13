@@ -43,6 +43,9 @@ let everConnected = false;
 let pairingInProgress = false;
 let clientStarting = false;
 let sessionRestored = false;
+let qrCount = 0;
+let backupTimeout = null;
+let backupInterval = null;
 let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
@@ -56,12 +59,11 @@ function makeClient(phoneNumber) {
             args: [
                 '--no-sandbox', '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage', '--no-zygote',
-                '--single-process', '--disable-gpu',
+                '--disable-gpu',
                 '--disable-features=site-per-process',
                 '--disable-extensions',
                 '--disable-component-extensions-with-background-pages',
                 '--disable-background-networking',
-                '--js-flags=--max-old-space-size=384',
             ],
         },
     };
@@ -83,15 +85,20 @@ function setupEvents(client) {
 
     client.on('qr', async (qr) => {
         if (!pairingInProgress && sessionRestored) {
-            console.log('[qr] QR inesperado — sesión restaurada inválida. Limpiando...');
-            clientReady = false;
-            sessionRestored = false;
-            const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-            try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-            try { await store.deleteSession(SESSION_KEY); } catch (_) {}
-            if (currentClient) {
-                try { await currentClient.destroy(); } catch (_) {}
-                currentClient = null;
+            qrCount++;
+            console.log(`[qr] QR inesperado (intento ${qrCount}/3)`);
+            if (qrCount >= 3) {
+                console.log('[qr] QR persistente — sesión inválida. Limpiando...');
+                clientReady = false;
+                sessionRestored = false;
+                qrCount = 0;
+                const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+                try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+                try { await store.deleteSession(SESSION_KEY); } catch (_) {}
+                if (currentClient) {
+                    try { await currentClient.destroy(); } catch (_) {}
+                    currentClient = null;
+                }
             }
         }
     });
@@ -116,6 +123,9 @@ function setupEvents(client) {
         clientReady = true;
         everConnected = true;
         sessionRestored = false;
+        qrCount = 0;
+        if (backupTimeout) clearTimeout(backupTimeout);
+        if (backupInterval) clearInterval(backupInterval);
         console.log('WhatsApp conectado correctamente');
 
         await new Promise(r => setTimeout(r, 1000));
@@ -128,22 +138,24 @@ function setupEvents(client) {
             console.log('[backup] Error:', e.message);
         }
 
-        setTimeout(async () => {
+        backupTimeout = setTimeout(async () => {
             try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
         }, 120000);
 
-        setInterval(async () => {
+        backupInterval = setInterval(async () => {
             try { await store.saveSession(SESSION_KEY, sessionDir); } catch (_) {}
         }, 300000);
     });
 
     client.on('disconnected', (reason) => {
         console.log('Desconectado:', reason);
+        qrCount = 0;
+        if (backupTimeout) clearTimeout(backupTimeout);
+        if (backupInterval) clearInterval(backupInterval);
+        backupTimeout = null;
+        backupInterval = null;
         clientReady = false;
         pairingInProgress = false;
-        // NOTA: No borramos la sesión de Storage.
-        // disconnected puede ser temporal (caída de red).
-        // Solo auth_failure indica sesión inválida definitiva.
     });
 }
 
@@ -152,6 +164,8 @@ async function cleanupChromeLocks() {
     for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
         try { fs.unlinkSync(path.join(sessionDir, f)); } catch (_) {}
     }
+    const levelDbLock = path.join(sessionDir, 'Default', 'IndexedDB', 'https_web.whatsapp.com_0.indexeddb.leveldb', 'LOCK');
+    try { fs.unlinkSync(levelDbLock); } catch (_) {}
     try { fs.rmSync(path.join(sessionDir, 'Default', 'Cache'), { recursive: true, force: true }); } catch (_) {}
     try { require('child_process').execFileSync('pkill', ['-f', 'chrome'], { timeout: 3000 }); } catch (_) {}
 }
