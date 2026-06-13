@@ -45,45 +45,6 @@ let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
 
-async function startPairing(phone, attempt = 1) {
-    const maxAttempts = 3;
-    try {
-        pendingPairingCode = null;
-        pendingPairingError = null;
-
-        if (currentClient) {
-            try { await currentClient.destroy(); } catch (_) {}
-            currentClient = null;
-        }
-        clientReady = false;
-
-        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
-        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
-
-        console.log(`[pair] Intento ${attempt}/${maxAttempts} — creando cliente con pairWithPhoneNumber para:`, phone);
-        currentClient = makeClient(phone);
-
-        currentClient.on('code', (code) => {
-            console.log('[pair] Código obtenido:', code);
-            pendingPairingCode = code;
-        });
-
-        setupEvents(currentClient);
-        await currentClient.initialize();
-        console.log('[pair] initialize() completado');
-    } catch (e) {
-        console.log(`[pair] Error en intento ${attempt}:`, e.message);
-        if (attempt < maxAttempts) {
-            console.log(`[pair] Reintentando en 3s...`);
-            await new Promise(r => setTimeout(r, 3000));
-            return startPairing(phone, attempt + 1);
-        }
-        pendingPairingError = `Error tras ${maxAttempts} intentos: ${e.message}`;
-    } finally {
-        pairingInProgress = false;
-    }
-}
-
 function makeClient(phoneNumber) {
     const opts = {
         authStrategy: new LocalAuth({ clientId: SESSION_KEY, dataPath: AUTH_DIR }),
@@ -150,7 +111,6 @@ async function startClient() {
         currentClient.initialize();
     } else {
         console.log('[index] No hay sesión guardada. Ir a /pair para vincular.');
-        // No crear cliente hasta que el usuario visite /pair
     }
 }
 
@@ -160,6 +120,71 @@ function startKeepAlive() {
     const ping = () => https.get(url + '/healthz', () => {}).on('error', () => {});
     ping(); setTimeout(ping, 120000); setInterval(ping, 240000);
 }
+
+// ----- Pairing code generation directa via Puppeteer -----
+
+async function generatePairingCode(page, phone) {
+    return await page.evaluate(async (phoneNumber) => {
+        let waited = 0;
+        while (!window.AuthStore?.PairingCodeLinkUtils) {
+            await new Promise(r => setTimeout(r, 200));
+            waited += 200;
+            if (waited > 30000) throw new Error('Tiempo esperando PairingCodeLinkUtils');
+        }
+        const utils = window.AuthStore.PairingCodeLinkUtils;
+        utils.setPairingType('ALT_DEVICE_LINKING');
+        await utils.initializeAltDeviceLinking();
+        return await utils.startAltLinkingFlow(phoneNumber, true);
+    }, phone);
+}
+
+async function startPairing(phone, attempt = 1) {
+    const maxAttempts = 3;
+    try {
+        pendingPairingCode = null;
+        pendingPairingError = null;
+
+        if (currentClient) {
+            try { await currentClient.destroy(); } catch (_) {}
+            currentClient = null;
+        }
+        clientReady = false;
+
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+
+        console.log(`[pair] Intento ${attempt}/${maxAttempts} — creando cliente...`);
+        currentClient = makeClient(phone);
+
+        currentClient.on('code', (code) => {
+            console.log('[pair] Código recibido (evento):', code);
+            pendingPairingCode = code;
+        });
+
+        setupEvents(currentClient);
+        await currentClient.initialize();
+        console.log('[pair] initialize() completado');
+
+        if (!pendingPairingCode && currentClient.pupPage) {
+            console.log('[pair] Generando código vía directa...');
+            const code = await generatePairingCode(currentClient.pupPage, phone);
+            console.log('[pair] Código generado:', code);
+            pendingPairingCode = code;
+        }
+    } catch (e) {
+        console.log(`[pair] Error intento ${attempt}:`, e.message);
+        if (attempt < maxAttempts) {
+            console.log(`[pair] Reintentando en 3s...`);
+            await new Promise(r => setTimeout(r, 3000));
+            return startPairing(phone, attempt + 1);
+        }
+        pendingPairingError = `Error tras ${maxAttempts} intentos: ${e.message}`;
+    } finally {
+        pairingInProgress = false;
+    }
+}
+
+// ----- Rutas Express -----
 
 app.get('/', (req, res) => {
     res.json({ status: clientReady ? 'conectado' : 'conectando' });
@@ -200,7 +225,6 @@ app.post('/pair', async (req, res) => {
     pendingPairingError = null;
     pairingInProgress = true;
 
-    // Lanzar en background (no esperar)
     startPairing(phone);
 
     res.type('html');
@@ -220,7 +244,7 @@ a{color:#25D366}
 <p id="msg">Iniciando navegador, espera unos segundos...</p>
 <script>
 let pollCount = 0;
-let maxPolls = 180; // 3 minutos
+let maxPolls = 180;
 async function check() {
     if (pollCount++ > maxPolls) {
         document.body.innerHTML = '<div class="wrap"><h2>Tiempo de espera agotado</h2><p>No se pudo generar el código. <a href="/pair">Intentar de nuevo</a></p></div>';
@@ -235,7 +259,6 @@ async function check() {
         }
         if (d.code) {
             document.body.innerHTML = '<div class="wrap"><h2>📱 Código de 8 caracteres</h2><code style="font-size:36px;background:#1a1a2e;padding:20px 50px;border-radius:12px;display:inline-block;margin:20px 0;color:#25D366;letter-spacing:10px;font-weight:bold;border:2px solid #25D366">' + d.code + '</code><div class="instructions" style="background:#222;padding:20px;border-radius:8px;text-align:left;max-width:400px;margin:15px auto;font-size:14px;color:#ccc;line-height:1.6"><b style="color:#25D366">1.</b> En tu teléfono abre WhatsApp<br><b style="color:#25D366">2.</b> Ve a <b>Ajustes → Dispositivos vinculados</b><br><b style="color:#25D366">3.</b> Toca <b>Vincular un dispositivo</b><br><b style="color:#25D366">4.</b> Elige <b>Vincular con número de teléfono</b><br><b style="color:#25D366">5.</b> Ingresa este código</div><p style="color:#666">La página se actualizará automáticamente cuando se vincule.</p>';
-            // Poll connection status
             setInterval(async () => {
                 try {
                     let r = await fetch('/qr-data');
@@ -273,12 +296,12 @@ app.get('/pair-data', (req, res) => {
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
 
-// Evitar crash por el bug de whatsapp-web.js: llama requestPairingCode sin await
+// ----- Manejo de errores y cierre -----
+
 process.on('unhandledRejection', (err) => {
-    console.log('[unhandledRejection]', err?.message || err);
+    console.log('[unhandledRejection]', err?.stack || err?.message || err);
 });
 
-// Guardar sesión antes de que Render mate el proceso
 let sessionSaveInProgress = false;
 
 process.on('SIGTERM', async () => {
@@ -288,7 +311,7 @@ process.on('SIGTERM', async () => {
         const dir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         if (sessionSaveInProgress) {
             console.log('SIGTERM — backup ya en progreso, esperando...');
-            return; // forceExit se encargará si tarda demasiado
+            return;
         }
         sessionSaveInProgress = true;
         try {
