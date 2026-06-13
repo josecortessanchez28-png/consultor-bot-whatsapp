@@ -85,12 +85,12 @@ function setupEvents(client) {
         everConnected = true;
         console.log('WhatsApp conectado correctamente');
 
-        // Esperar 5s para que IndexedDB termine de escribir
-        await new Promise(r => setTimeout(r, 5000));
+        // Esperar 1s para que IndexedDB termine de escribir
+        await new Promise(r => setTimeout(r, 1000));
 
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try {
-            console.log('[backup] Backup 5s...');
+            console.log('[backup] Backup 1s...');
             await store.saveSession(SESSION_KEY, sessionDir);
         } catch (e) {
             console.log('[backup] Error:', e.message);
@@ -129,7 +129,15 @@ async function startClient() {
     if (clientStarting || clientReady) return;
     clientStarting = true;
 
-    const exists = await store.sessionExists(SESSION_KEY);
+    // Reintentar hasta 20s: el proceso viejo podría estar subiendo el backup en SIGTERM
+    let exists = false;
+    for (let i = 0; i < 10; i++) {
+        exists = await store.sessionExists(SESSION_KEY);
+        if (exists) break;
+        if (i === 0) console.log('[index] Sin sesión, esperando posible backup de proceso anterior...');
+        await new Promise(r => setTimeout(r, 2000));
+    }
+
     if (exists) {
         console.log('[index] Restaurando sesión...');
         await store.restoreSession(SESSION_KEY, AUTH_DIR);
@@ -371,7 +379,17 @@ process.on('unhandledRejection', (err) => {
 });
 
 process.on('SIGTERM', async () => {
-    console.log('SIGTERM');
+    console.log('SIGTERM - respaldando sesión antes de salir...');
+    if (currentClient) {
+        const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
+        try {
+            await store.saveSession(SESSION_KEY, sessionDir);
+            console.log('[SIGTERM] Backup completado');
+        } catch (e) {
+            console.log('[SIGTERM] Backup falló:', e.message);
+        }
+        try { await currentClient.destroy(); } catch (_) {}
+    }
     process.exit(0);
 });
 
