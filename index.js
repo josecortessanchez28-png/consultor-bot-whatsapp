@@ -50,6 +50,7 @@ function makeClient(phoneNumber) {
         authStrategy: new LocalAuth({ clientId: SESSION_KEY, dataPath: AUTH_DIR }),
         puppeteer: {
             headless: true,
+            protocolTimeout: 120000,
             args: [
                 '--no-sandbox', '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage', '--no-zygote',
