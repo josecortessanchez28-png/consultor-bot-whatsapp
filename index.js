@@ -45,8 +45,12 @@ let currentClient = null;
 let pendingPairingCode = null;
 let pendingPairingError = null;
 
-async function startPairing(phone) {
+async function startPairing(phone, attempt = 1) {
+    const maxAttempts = 3;
     try {
+        pendingPairingCode = null;
+        pendingPairingError = null;
+
         if (currentClient) {
             try { await currentClient.destroy(); } catch (_) {}
             currentClient = null;
@@ -56,7 +60,7 @@ async function startPairing(phone) {
         const sessionDir = path.join(AUTH_DIR, `session-${SESSION_KEY}`);
         try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
 
-        console.log('[pair] Creando cliente con pairWithPhoneNumber para:', phone);
+        console.log(`[pair] Intento ${attempt}/${maxAttempts} — creando cliente con pairWithPhoneNumber para:`, phone);
         currentClient = makeClient(phone);
 
         currentClient.on('code', (code) => {
@@ -68,8 +72,13 @@ async function startPairing(phone) {
         await currentClient.initialize();
         console.log('[pair] initialize() completado');
     } catch (e) {
-        console.log('[pair] Error en startPairing:', e.message);
-        pendingPairingError = e.message;
+        console.log(`[pair] Error en intento ${attempt}:`, e.message);
+        if (attempt < maxAttempts) {
+            console.log(`[pair] Reintentando en 3s...`);
+            await new Promise(r => setTimeout(r, 3000));
+            return startPairing(phone, attempt + 1);
+        }
+        pendingPairingError = `Error tras ${maxAttempts} intentos: ${e.message}`;
     } finally {
         pairingInProgress = false;
     }
@@ -263,6 +272,11 @@ app.get('/pair-data', (req, res) => {
 });
 
 app.get('/healthz', (req, res) => res.json({ status: 'ok' }));
+
+// Evitar crash por el bug de whatsapp-web.js: llama requestPairingCode sin await
+process.on('unhandledRejection', (err) => {
+    console.log('[unhandledRejection]', err?.message || err);
+});
 
 // Guardar sesión antes de que Render mate el proceso
 let sessionSaveInProgress = false;
