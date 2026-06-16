@@ -2,67 +2,72 @@ const database = require('./database');
 const groq = require('./groq');
 
 const SYSTEM_PROMPT = (
-    'Eres un consultor experto en IA y automatización de procesos de negocio. ' +
-    'Tu misión es encontrar la automatización o el agente de IA perfecto para Adrián y sus negocios. ' +
-    'Reglas estrictas:\n' +
-    '1. Responde SIEMPRE en una o dos frases cortas, estilo WhatsApp. Prohibidos los párrafos.\n' +
-    '2. Haz solo UNA pregunta estratégica a la vez. Espera su respuesta antes de avanzar.\n' +
-    '3. Sé empático y traduce conceptos técnicos a utilidad real.\n' +
-    '4. Cuando acumules suficiente información sobre un problema, PROPÓN formalmente una solución técnica concreta.\n' +
-    '5. Si te envía un audio, ya viene transcrito como texto. Responde al contenido.'
+    'Eres Asesos, un asistente personal de IA para Esther. ' +
+    'Tu misión es ayudar a Esther a identificar problemas del día a día que puedan ' +
+    'resolverse con automatización o inteligencia artificial.\n\n' +
+    'Reglas:\n' +
+    '1. Responde en español, breve y natural. Tono amable.\n' +
+    '2. Cuando alguien te escriba por primera vez, preséntate: "¡Hola Esther! ¿Cómo estás? ' +
+    'Soy tu asesor de IA. ¿En qué crees que la inteligencia artificial puede ayudarte?".\n' +
+    '3. Haz solo UNA pregunta a la vez. Espera su respuesta antes de avanzar.\n' +
+    '4. Sé empática y traduce conceptos técnicos a utilidad real para su día a día.\n' +
+    '5. Cuando tengas suficiente información sobre un problema, PROPÓN una solución con IA concreta.\n' +
+    '6. Si es la primera vez que habla contigo, no hagas preguntas de inmediato, primero preséntate.'
 );
 
-async function handleMessage(client, msg) {
-    let waId = null;
+async function handleMessage(bot, msg) {
+    const chatId = String(msg.chat?.id || '');
+    const userId = String(msg.from?.id || '');
+    if (!chatId || !userId) return;
+
     try {
-        waId = msg.from;
+        let text = (msg.text || '').trim();
 
-        // Get text directly from body (works for text messages regardless of hasMedia)
-        let text = (msg.body || '').trim();
-
-        // For audio messages with no body, download and transcribe
-        if (!text) {
-            const msgType = msg.type || msg._data?.type || '';
-            if (msgType === 'ptt' || msgType === 'audio') {
-                try {
-                    const media = await msg.downloadMedia();
-                    if (media && media.data) {
-                        await client.sendMessage(waId, 'Transcribiendo audio...');
-                        text = await groq.transcribe(media.data, media.filename || 'audio.ogg');
-                    }
-                } catch (e) {
-                    console.error('Audio download/transcribe error:', e.message);
-                }
+        if (!text && msg.voice) {
+            try {
+                await bot.sendMessage(chatId, 'Transcribiendo audio...');
+                const link = await bot.getFileLink(msg.voice.file_id);
+                const resp = await fetch(link);
+                const buffer = Buffer.from(await resp.arrayBuffer());
+                const b64 = buffer.toString('base64');
+                text = await groq.transcribe(b64, 'audio.ogg');
+                if (!text) text = '';
+            } catch (e) {
+                console.error('Audio transcribe error:', e.message);
             }
         }
 
         if (!text) {
-            console.log('Mensaje sin texto reconocible, ignorando');
+            console.log('Mensaje sin texto, ignorando');
             return;
         }
 
-        const history = await database.getRecentMessages(waId, 15);
+        const history = await database.getRecentMessages(userId, 15);
+        const isFirst = history.length === 0;
 
         const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
         for (const [role, content] of history) {
             messages.push({ role, content });
         }
-        messages.push({ role: 'user', content: text });
 
-        await database.saveMessage(waId, 'user', text);
+        if (isFirst) {
+            const greeting = '¡Hola Esther! ¿Cómo estás? Soy tu asesor de IA. ¿En qué crees que la inteligencia artificial puede ayudarte?';
+            await database.saveMessage(userId, 'assistant', greeting);
+            await bot.sendMessage(chatId, greeting);
+            return;
+        }
+
+        messages.push({ role: 'user', content: text });
+        await database.saveMessage(userId, 'user', text);
 
         const resp = await groq.chat(messages);
         const reply = resp || 'No pude generar respuesta ahora. Intenta de nuevo.';
 
-        await database.saveMessage(waId, 'assistant', reply);
-        await client.sendMessage(waId, reply);
+        await database.saveMessage(userId, 'assistant', reply);
+        await bot.sendMessage(chatId, reply);
     } catch (e) {
         console.error('handleMessage error:', e.message);
-        if (waId && client) {
-            try {
-                await client.sendMessage(waId, 'Ocurrió un error al procesar tu mensaje.');
-            } catch (_) {}
-        }
+        try { await bot.sendMessage(chatId, 'Ocurrió un error al procesar tu mensaje.'); } catch (_) {}
     }
 }
 
