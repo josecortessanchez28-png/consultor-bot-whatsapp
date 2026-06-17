@@ -42,28 +42,21 @@ async function handleMessage(bot, msg) {
             return;
         }
 
-        const history = await database.getRecentMessages(userId, 15);
-        const isFirst = history.length === 0;
+        let history = [];
+        try { history = await database.getRecentMessages(userId, 15); } catch (_) {}
 
         const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
         for (const [role, content] of history) {
             messages.push({ role, content });
         }
-
-        if (isFirst) {
-            const greeting = '¡Hola Esther! ¿Cómo estás? Soy tu asesor de IA. ¿En qué crees que la inteligencia artificial puede ayudarte?';
-            await database.saveMessage(userId, 'assistant', greeting);
-            await bot.sendMessage(chatId, greeting);
-            return;
-        }
-
         messages.push({ role: 'user', content: text });
-        await database.saveMessage(userId, 'user', text);
+
+        try { await database.saveMessage(userId, 'user', text); } catch (_) {}
 
         const resp = await groq.chat(messages);
         const reply = resp || 'No pude generar respuesta ahora. Intenta de nuevo.';
 
-        await database.saveMessage(userId, 'assistant', reply);
+        try { await database.saveMessage(userId, 'assistant', reply); } catch (_) {}
         await bot.sendMessage(chatId, reply);
     } catch (e) {
         console.error('handleMessage error:', e.message);
