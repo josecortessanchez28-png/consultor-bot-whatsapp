@@ -1,4 +1,3 @@
-const database = require('./database');
 const groq = require('./groq');
 
 const SYSTEM_PROMPT = (
@@ -13,6 +12,20 @@ const SYSTEM_PROMPT = (
     '5. Cuando tengas suficiente información sobre un problema, PROPÓN una solución con IA concreta.\n' +
     '6. No te repitas. Si ya te presentaste, no lo hagas de nuevo.'
 );
+
+const MAX_HISTORY = 30;
+const historyMap = new Map();
+
+function getHistory(userId) {
+    return historyMap.get(userId) || [];
+}
+
+function addToHistory(userId, role, content) {
+    let h = historyMap.get(userId) || [];
+    h.push({ role, content });
+    if (h.length > MAX_HISTORY) h = h.slice(-MAX_HISTORY);
+    historyMap.set(userId, h);
+}
 
 async function handleMessage(bot, msg) {
     const chatId = String(msg.chat?.id || '');
@@ -41,21 +54,20 @@ async function handleMessage(bot, msg) {
             return;
         }
 
-        let history = [];
-        try { history = await database.getRecentMessages(userId, 15); } catch (_) {}
+        const history = getHistory(userId);
 
         const messages = [{ role: 'system', content: SYSTEM_PROMPT }];
-        for (const [role, content] of history) {
+        for (const { role, content } of history) {
             messages.push({ role, content });
         }
         messages.push({ role: 'user', content: text });
 
-        try { await database.saveMessage(userId, 'user', text); } catch (_) {}
+        addToHistory(userId, 'user', text);
 
         const resp = await groq.chat(messages);
         const reply = resp || 'No pude generar respuesta ahora. Intenta de nuevo.';
 
-        try { await database.saveMessage(userId, 'assistant', reply); } catch (_) {}
+        addToHistory(userId, 'assistant', reply);
         await bot.sendMessage(chatId, reply);
     } catch (e) {
         console.error('handleMessage error:', e.message);
