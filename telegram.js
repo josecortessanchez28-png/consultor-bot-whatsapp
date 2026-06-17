@@ -66,8 +66,15 @@ app.listen(PORT, async () => {
     telegramBot.on('message', (msg) => {
         const senderId = String(msg.from?.id || '');
         console.log('[telegram] Mensaje de usuario:', senderId, msg.from?.first_name || '');
-        // Temporal: responder a todos hasta identificar el ID de Esther
         bot.handleMessage(telegramBot, msg);
+    });
+    telegramBot.on('polling_error', async (err) => {
+        if (err?.code === 'ETELEGRAM' && err?.message?.includes('409')) {
+            console.log('[telegram] 409 detectado, esperando 10s y reconectando...');
+            try { await telegramBot.stopPolling(); } catch (_) {}
+            await new Promise(r => setTimeout(r, 10000));
+            try { await telegramBot.startPolling(); } catch (_) {}
+        }
     });
     console.log('Bot de Telegram iniciado');
     startKeepAlive();
