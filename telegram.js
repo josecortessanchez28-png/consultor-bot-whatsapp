@@ -6,7 +6,6 @@ const bot = require('./bot');
 
 const PORT = process.env.PORT || 10000;
 const TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const ESTHER_ID = process.env.ESTHER_TELEGRAM_ID;
 const app = express();
 
 let heartbeatInterval;
@@ -66,10 +65,8 @@ app.listen(PORT, async () => {
     telegramBot = new TelegramBot(TOKEN, { polling: true });
     telegramBot.on('message', (msg) => {
         const senderId = String(msg.from?.id || '');
-        if (senderId !== ESTHER_ID) {
-            console.log('Ignorando usuario no autorizado:', senderId);
-            return;
-        }
+        console.log('[telegram] Mensaje de usuario:', senderId, msg.from?.first_name || '');
+        // Temporal: responder a todos hasta identificar el ID de Esther
         bot.handleMessage(telegramBot, msg);
     });
     console.log('Bot de Telegram iniciado');
